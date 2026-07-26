@@ -38,6 +38,9 @@
     "tests/__init__.py",
     "tests/test_vehicle.py",
     "tests/test_state_machine.py",
-    "tests/test_perception.py"
+    "tests/test_perception.py",
+    "tests/test_event_bus.py",
+    "tests/test_world.py",
+    "tests/test_hmi.py"
   ]
 }
