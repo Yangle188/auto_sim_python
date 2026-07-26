@@ -1,0 +1,27 @@
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py[cod]
+*$py.class
+
+# 虚拟环境
+venv/
+.venv/
+env/
+ENV/
+
+# PyCharm 配置
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Mac系统文件
+.DS_Store
+._*
+
+# 日志、临时文件
+*.log
+*.tmp

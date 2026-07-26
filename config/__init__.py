@@ -1,0 +1,6 @@
+# config/__init__.py
+from .base_config import (
+    DT, MAX_SIM_TIME, GRAVITY,
+    STATE_OFF, STATE_PASSIVE, STATE_STANDBY, STATE_ACTIVE, STATE_OVERRIDE,
+    HMI_INFO, HMI_WARN, HMI_ALERT, HMI_FAULT
+)
