@@ -15,6 +15,6 @@ STATE_OVERRIDE = "OVERRIDE"
 
 # ====================== HMI告警等级枚举【全系统共用】 ======================
 HMI_INFO = "INFO"
-HMI_WARN = "WARNING"
+HMI_WARNING = "WARNING"
 HMI_ALERT = "ALERT"
 HMI_FAULT = "FAULT"
