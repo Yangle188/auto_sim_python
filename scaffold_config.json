@@ -13,6 +13,8 @@
     "perception/config.py",
     "perception/camera_sim.py",
     "perception/lidar_sim.py",
+    "perception/base.py",
+    "perception/perception_fusion.py",
     "localization/__init__.py",
     "localization/config.py",
     "localization/ekf_localizer.py",
