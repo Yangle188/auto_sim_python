@@ -25,3 +25,6 @@ ENV/
 # 日志、临时文件
 *.log
 *.tmp
+
+# pytest
+.pytest_cache/

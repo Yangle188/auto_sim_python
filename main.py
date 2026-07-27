@@ -6,6 +6,7 @@ from framework.state_machine import (
     EV_SELF_CHECK_OK,
     EV_ACTIVATE
 )
+from framework.config import ACTIVE_LOW_SPEED_THRESHOLD
 from framework.event_bus import EventBus
 from simulator.world import SimulationWorld
 from hmi.hmi_manager import HMIManager
@@ -53,7 +54,6 @@ def main():
     sim_time = 0.0
     total_sim_time = 20.0
     self_check_done = False
-    ad_activated = False
 
     print("=" * 70)
     print("自动驾驶仿真系统启动（感知模块已接入）")
@@ -74,7 +74,7 @@ def main():
         steer = 0.0
         current_speed = world.vehicle.speed
 
-        if state_machine.get_state() == STATE_STANDBY and not ad_activated:
+        if state_machine.get_state() == STATE_STANDBY:
             acc = 2.0
         elif state_machine.get_state() == STATE_ACTIVE:
             target_speed = 10.0
@@ -114,10 +114,9 @@ def main():
         )
 
         # ---------- 5.4 状态机条件跳转判断 ----------
-        if state_machine.get_state() == STATE_STANDBY and not ad_activated:
-            if current_speed >= 3.0:
+        if state_machine.get_state() == STATE_STANDBY:
+            if current_speed >= ACTIVE_LOW_SPEED_THRESHOLD:
                 state_machine.transit(EV_ACTIVATE, vehicle_speed=current_speed)
-                ad_activated = True
 
         # ---------- 5.5 状态机时序更新 ----------
         state_machine.step(DT)

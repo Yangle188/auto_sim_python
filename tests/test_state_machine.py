@@ -9,7 +9,7 @@ from framework.state_machine import (
     EV_DRIVER_OVERRIDE,
     EV_SPEED_OUT_OF_RANGE
 )
-from config.base_config import (
+from config import (
     STATE_OFF,
     STATE_PASSIVE,
     STATE_STANDBY,
