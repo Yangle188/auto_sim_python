@@ -17,6 +17,8 @@ from hmi.hmi_manager import HMIManager
 from perception.lidar_sim import LidarSimulator
 from perception.camera_sim import CameraSimulator
 from perception.perception_fusion import PerceptionFusion
+from control.pure_pursuit import PurePursuit
+from control.config import STANDBY_ACC
 
 
 def main():
@@ -28,6 +30,7 @@ def main():
     lidar = LidarSimulator()
     camera = CameraSimulator()
     perception_fusion = PerceptionFusion()
+    controller = PurePursuit()
 
     # ===================== 2. 预加载仿真场景 =====================
     world.add_obstacle(15.0, 0.0, 2.0, 2.0)    # 正前方近距离
@@ -75,15 +78,17 @@ def main():
                 print(f"[t={sim_time:5.2f}s] 自检未通过，保持 PASSIVE")
 
         # ---------- 5.2 计算控制量 + 物理世界步进 ----------
+        vehicle_state = world.vehicle.get_state()
         acc = 0.0
         steer = 0.0
-        current_speed = world.vehicle.speed
+        state = state_machine.get_state()
 
-        if state_machine.get_state() == STATE_STANDBY:
-            acc = 2.0
-        elif state_machine.get_state() == STATE_ACTIVE:
-            target_speed = 10.0
-            acc = (target_speed - current_speed) * 0.5
+        if state == STATE_STANDBY:
+            # 纵向用固定起步加速度，横向仍跟路径
+            _, steer = controller.compute(vehicle_state, world.reference_path)
+            acc = STANDBY_ACC
+        elif state == STATE_ACTIVE:
+            acc, steer = controller.compute(vehicle_state, world.reference_path)
 
         world.step(acc, steer)
         vehicle_state = world.vehicle.get_state()
@@ -102,6 +107,7 @@ def main():
             ego_yaw=vehicle_state["yaw"],
             true_obstacles=world.obstacles
         )
+        # 3. 多传感器融合
         perception_fusion.fuse(lidar.get_results(), camera.get_results())
         fused_obstacles = perception_fusion.get_results()
 
