@@ -60,12 +60,28 @@ class PerceptionFusion:
                 self._fusion_results.append(fused)
                 matched_camera_idx.add(best_match_idx)
             else:
-                # 未匹配：直接保留激光雷达结果
-                lidar_obs.source = "lidar_only"
-                self._fusion_results.append(lidar_obs)
+                # 未匹配：复制后改 source，避免污染传感器原始结果
+                self._fusion_results.append(DetectedObstacle(
+                    obs_id=lidar_obs.obs_id,
+                    x=lidar_obs.x,
+                    y=lidar_obs.y,
+                    width=lidar_obs.width,
+                    height=lidar_obs.height,
+                    confidence=lidar_obs.confidence,
+                    category=lidar_obs.category,
+                    source="lidar_only"
+                ))
 
         # 补充摄像头未匹配的结果
         for cam_idx, cam_obs in enumerate(camera_results):
             if cam_idx not in matched_camera_idx:
-                cam_obs.source = "camera_only"
-                self._fusion_results.append(cam_obs)
+                self._fusion_results.append(DetectedObstacle(
+                    obs_id=cam_obs.obs_id,
+                    x=cam_obs.x,
+                    y=cam_obs.y,
+                    width=cam_obs.width,
+                    height=cam_obs.height,
+                    confidence=cam_obs.confidence,
+                    category=cam_obs.category,
+                    source="camera_only"
+                ))

@@ -57,8 +57,27 @@ def test_clear_all():
     print("✅ 清空所有订阅测试通过")
 
 
+def test_callback_exception_isolation():
+    """单个回调异常不应阻断同主题其他订阅者"""
+    bus = EventBus()
+    received = []
+
+    def bad(_data):
+        raise RuntimeError("boom")
+
+    def good(data):
+        received.append(data)
+
+    bus.subscribe("t", bad)
+    bus.subscribe("t", good)
+    bus.publish("t", {"ok": True})
+    assert received == [{"ok": True}]
+    print("✅ 回调异常隔离测试通过")
+
+
 if __name__ == "__main__":
     test_subscribe_and_publish()
     test_unsubscribe()
     test_clear_all()
+    test_callback_exception_isolation()
     print("\n🎉 EventBus 全部测试用例通过")

@@ -1,5 +1,4 @@
 # simulator/world.py
-from config import DT
 from .vehicle import Vehicle
 
 

@@ -60,10 +60,12 @@ class Vehicle:
         # 4. 用平均速度计算位移（物理更准确，匹配匀加速理论公式）
         avg_speed = (speed_old + self.speed) / 2.0
 
-        # 5. 更新航向角
+        # 5. 更新航向角，再用平均航向积分位置（避免先改 yaw 再积分导致的一阶偏差）
         yaw_rate = avg_speed / WHEEL_BASE * math.tan(steer_angle)
+        yaw_old = self.yaw
         self.yaw += yaw_rate * DT
+        avg_yaw = (yaw_old + self.yaw) / 2.0
 
         # 6. 更新世界坐标位置
-        self.x += avg_speed * math.cos(self.yaw) * DT
-        self.y += avg_speed * math.sin(self.yaw) * DT
+        self.x += avg_speed * math.cos(avg_yaw) * DT
+        self.y += avg_speed * math.sin(avg_yaw) * DT

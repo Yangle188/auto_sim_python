@@ -4,11 +4,13 @@ from framework.state_machine import (
     EV_POWER_ON,
     EV_POWER_OFF,
     EV_SELF_CHECK_OK,
+    EV_SELF_CHECK_FAIL,
     EV_ACTIVATE,
     EV_DEACTIVATE,
     EV_DRIVER_OVERRIDE,
     EV_SPEED_OUT_OF_RANGE
 )
+from framework.config import SELF_CHECK_MAX_TIME
 from config import (
     STATE_OFF,
     STATE_PASSIVE,
@@ -89,9 +91,48 @@ def test_speed_out_range():
     print("✅ 车速越限降级测试通过")
 
 
+def test_self_check_timeout():
+    """PASSIVE 自检超时后拒绝进入 STANDBY，需重新上电"""
+    sm = AutoDriveStateMachine()
+    sm.transit(EV_POWER_ON, 0)
+    assert sm.get_state() == STATE_PASSIVE
+
+    # 累计超过自检时限
+    steps = int(SELF_CHECK_MAX_TIME / 0.05) + 2
+    for _ in range(steps):
+        sm.step(0.05)
+
+    assert sm.is_self_check_failed() is True
+    ok = sm.transit(EV_SELF_CHECK_OK, 0)
+    assert ok is False
+    assert sm.get_state() == STATE_PASSIVE
+
+    # 重新上电可恢复
+    sm.transit(EV_POWER_OFF, 0)
+    sm.transit(EV_POWER_ON, 0)
+    assert sm.is_self_check_failed() is False
+    ok = sm.transit(EV_SELF_CHECK_OK, 0)
+    assert ok is True
+    assert sm.get_state() == STATE_STANDBY
+    print("✅ 自检超时逻辑测试通过")
+
+
+def test_self_check_fail_event():
+    """显式自检失败事件应阻止进入 STANDBY"""
+    sm = AutoDriveStateMachine()
+    sm.transit(EV_POWER_ON, 0)
+    ok = sm.transit(EV_SELF_CHECK_FAIL, 0)
+    assert ok is True
+    assert sm.is_self_check_failed() is True
+    assert sm.transit(EV_SELF_CHECK_OK, 0) is False
+    print("✅ 自检失败事件测试通过")
+
+
 if __name__ == "__main__":
     test_basic_power_flow()
     test_activate_ad()
     test_driver_override()
     test_speed_out_range()
+    test_self_check_timeout()
+    test_self_check_fail_event()
     print("\n🎉 全部状态机测试用例执行成功！")
