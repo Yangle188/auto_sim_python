@@ -4,6 +4,12 @@
 
 ## 2026-08-01
 
+### Map
+
+- 新增路线下发：`Link` / `Route` / `MapManager`；演示三段不同限速路线。
+- `get_speed_limit` / `get_speed_limit_ahead` 供纵向规划；`TrajPlanner.plan(..., speed_limit=)` 以限速为基准速。
+- `main` 用 demo route 替代手写三点路径；鸟瞰按 link 限速着色并显示 HUD `limit`。
+
 ### Visualize
 
 - **仿真中可暂停**：交互窗口下按 `Space` 暂停/继续；暂停期间仿真主循环阻塞，窗口标题与 HUD 显示 `PAUSED`。

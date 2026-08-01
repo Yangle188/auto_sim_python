@@ -1,6 +1,6 @@
 # planning/traj_planner.py
 import math
-from typing import List, Sequence, Tuple, Any
+from typing import List, Optional, Sequence, Tuple, Any
 
 from .config import (
     CRUISE_SPEED,
@@ -40,9 +40,11 @@ class TrajPlanner:
         path: List[Tuple[float, float]],
         obstacles: Sequence[Any] = (),
         predictions: Sequence[Any] = (),
+        speed_limit: Optional[float] = None,
     ) -> float:
         """
         :param predictions: PredictedObstacle 列表（可选）；用其 trajectory 点做前瞻挡路减速
+        :param speed_limit: 地图限速基准（m/s）；None 时用 cruise_speed
         :return: 目标车速 m/s（非负）
         """
         if len(path) < 2:
@@ -61,9 +63,10 @@ class TrajPlanner:
         )
         d_threat = min(d_obs, d_pred)
 
-        v = self.cruise_speed
-        v = min(v, self._speed_from_obstacle(d_threat))
-        v = min(v, self._speed_from_remaining(s_remain))
+        v_base = self.cruise_speed if speed_limit is None else max(0.0, float(speed_limit))
+        v = v_base
+        v = min(v, self._speed_from_obstacle(d_threat, v_base))
+        v = min(v, self._speed_from_remaining(s_remain, v_base))
         return max(0.0, v)
 
     def _closest_index(
@@ -194,22 +197,24 @@ class TrajPlanner:
                     best = d_lon
         return best
 
-    def _speed_from_obstacle(self, d_obs: float) -> float:
+    def _speed_from_obstacle(self, d_obs: float, v_base: float) -> float:
         """
-        d >= SLOW → cruise；
+        d >= SLOW → v_base；
         d <= STOP → 0；
-        其间从 MIN_SPEED 线性升到 CRUISE。
+        其间从 MIN_SPEED 线性升到 v_base。
         """
         if d_obs >= self.slow_distance:
-            return self.cruise_speed
+            return v_base
         if d_obs <= self.stop_distance:
             return 0.0
         ratio = (d_obs - self.stop_distance) / (self.slow_distance - self.stop_distance)
-        return self.min_speed + ratio * (self.cruise_speed - self.min_speed)
+        # min_speed 不超过基准速，避免限速很低时插值反常
+        v_lo = min(self.min_speed, v_base)
+        return v_lo + ratio * (v_base - v_lo)
 
-    def _speed_from_remaining(self, s_remain: float) -> float:
+    def _speed_from_remaining(self, s_remain: float, v_base: float) -> float:
         if s_remain >= self.end_slow_distance:
-            return self.cruise_speed
+            return v_base
         if s_remain <= 0.0:
             return 0.0
-        return self.cruise_speed * (s_remain / self.end_slow_distance)
+        return v_base * (s_remain / self.end_slow_distance)

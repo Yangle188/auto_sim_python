@@ -20,6 +20,12 @@
     "localization/ekf_localizer.py",
     "prediction/__init__.py",
     "prediction/predictor.py",
+    "map/__init__.py",
+    "map/config.py",
+    "map/link.py",
+    "map/route.py",
+    "map/map_manager.py",
+    "map/demo_routes.py",
     "planning/__init__.py",
     "planning/config.py",
     "planning/path_planner.py",
@@ -48,6 +54,7 @@
     "tests/test_planning.py",
     "tests/test_visualize.py",
     "tests/test_localization.py",
-    "tests/test_prediction.py"
+    "tests/test_prediction.py",
+    "tests/test_map.py"
   ]
 }

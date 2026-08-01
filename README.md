@@ -17,6 +17,7 @@ PythonProject/
 ├── visualize/              # matplotlib 鸟瞰渲染（车辆/路径/预瞄/障碍）
 ├── localization/           # 自行车模型 EKF 定位（GPS + 里程计）
 ├── prediction/             # 恒速障碍预测（跟踪 + 短时外推）
+├── map/                    # 路线下发（Link/Route）与限速查询
 ├── tests/                  # 单元测试
 ├── docs/                   # 开发总结等文档
 ├── HANDOFF.md              # 交接文档（继续开发请先读）
@@ -40,6 +41,7 @@ PythonProject/
 | `visualize/config.py` | 可视化开关、刷新间隔、图尺寸、轨迹长度 |
 | `localization/config.py` | GPS 周期/噪声、过程噪声、初始协方差 |
 | `prediction/config.py` | 预测时域、关联距离、coast、速度阈值 |
+| `map/config.py` | 前方限速前瞻距离、link 衔接容差 |
 
 > 根目录遗留的 `config.py` 已移除；Python 统一从 `config/` 包导入全局配置。
 
@@ -54,6 +56,7 @@ PythonProject/
 - **visualize** — matplotlib 鸟瞰：车辆、航点/密化路径、预瞄点、障碍与融合检测、HUD（含估计轨迹）
 - **localization** — 4 状态 EKF（里程计预测 + 含噪 GPS）；规划/控制吃估计位姿，感知吃真值
 - **prediction** — 融合检测最近邻跟踪 + 恒速短时预测，供 TrajPlanner 前瞻减速
+- **map** — Route/Link 路线下发与限速查询；`main` 下发演示路线，纵向规划吃 `speed_limit`
 
 ## 规划中模块
 
@@ -62,6 +65,7 @@ PythonProject/
 ## 文档
 
 - [HANDOFF.md](HANDOFF.md) — 交接与继续开发指引
+- [docs/SUMMARY_2026-08-01_map.md](docs/SUMMARY_2026-08-01_map.md) — map 模块开发总结
 - [docs/SUMMARY_2026-08-01_prediction.md](docs/SUMMARY_2026-08-01_prediction.md) — prediction 模块开发总结
 - [docs/SUMMARY_2026-08-01_localization.md](docs/SUMMARY_2026-08-01_localization.md) — localization / EKF 开发总结
 - [docs/SUMMARY_2026-08-01_visualize.md](docs/SUMMARY_2026-08-01_visualize.md) — visualize 模块开发总结
@@ -112,10 +116,10 @@ PYTHONPATH=. python tests/test_state_machine.py
 1. t=0.5s 上电（OFF → PASSIVE）
 2. t=2.5s 自检通过（PASSIVE → STANDBY）
 3. STANDBY 阶段加速，车速 ≥ 5 m/s 时激活 AD（STANDBY → ACTIVE）
-4. 每帧先更新感知融合，再由 PathPlanner 密化路径、TrajPlanner 输出 `target_speed`
-5. 融合结果经 ObstaclePredictor 做恒速预测，TrajPlanner 结合预测前瞻调速
-6. ACTIVE 阶段用 EKF 估计位姿做 Pure Pursuit（默认巡航约 10 m/s，近终点/障碍减速）
-7. 每帧 EKF 预测并按 GPS 周期融合含噪位置；鸟瞰显示真值、估计与预测轨迹
+4. 启动时下发 demo Route（多段不同限速）；PathPlanner 密化 waypoints
+5. 每帧感知融合 → ObstaclePredictor；`MapManager.get_speed_limit_ahead` + 预测/障碍 → TrajPlanner
+6. ACTIVE 阶段用 EKF 估计位姿做 Pure Pursuit（基准速为地图限速，近终点/障碍再减速）
+7. 每帧 EKF 预测并按 GPS 周期融合含噪位置；鸟瞰显示真值、估计、预测与按限速着色的 route links
 
 ## 状态机激活条件
 

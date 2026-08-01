@@ -25,6 +25,8 @@ from visualize.renderer import create_renderer
 from localization.ekf_localizer import EKFLocalizer
 from localization.config import GPS_PERIOD
 from prediction.predictor import ObstaclePredictor
+from map.map_manager import MapManager
+from map.demo_routes import build_demo_route
 
 
 def _run_episode(renderer) -> str:
@@ -44,6 +46,8 @@ def _run_episode(renderer) -> str:
     traj_planner = TrajPlanner()
     predictor = ObstaclePredictor()
     localizer = EKFLocalizer()
+    map_mgr = MapManager()
+    map_mgr.set_route(build_demo_route())
     true0 = world.vehicle.get_state()
     localizer.reset(
         x=true0["x"], y=true0["y"], yaw=true0["yaw"], speed=true0["speed"]
@@ -56,7 +60,7 @@ def _run_episode(renderer) -> str:
     world.add_obstacle(-10.0, 0.0, 2.0, 2.0)
     world.add_obstacle(60.0, -8.0, 2.0, 2.0)
     dynamic_obs = world.obstacles[-1]
-    world.set_reference_path([(0, 0), (50, 0), (100, 2)])
+    world.set_reference_path(map_mgr.get_waypoints())
 
     def on_state_changed(old_state: str, new_state: str):
         event_bus.publish(
@@ -133,15 +137,16 @@ def _run_episode(renderer) -> str:
 
         predictions = predictor.step(fused_obstacles, DT)
         est_state = localizer.get_state()
-        path = path_planner.plan(world.reference_path)
+        path = path_planner.plan(map_mgr.get_waypoints())
+        v_limit = map_mgr.get_speed_limit_ahead(est_state["x"], est_state["y"])
         acc = 0.0
         steer = 0.0
         state = state_machine.get_state()
-        v_cmd = traj_planner.cruise_speed
+        v_cmd = traj_planner.cruise_speed if v_limit is None else v_limit
 
         if state == STATE_STANDBY:
             v_cmd = traj_planner.plan(
-                est_state, path, fused_obstacles, predictions
+                est_state, path, fused_obstacles, predictions, speed_limit=v_limit
             )
             if v_cmd >= traj_planner.cruise_speed - 1e-6:
                 _, steer = controller.compute(est_state, path)
@@ -152,7 +157,7 @@ def _run_episode(renderer) -> str:
                 )
         elif state == STATE_ACTIVE:
             v_cmd = traj_planner.plan(
-                est_state, path, fused_obstacles, predictions
+                est_state, path, fused_obstacles, predictions, speed_limit=v_limit
             )
             acc, steer = controller.compute(est_state, path, target_speed=v_cmd)
 
@@ -201,6 +206,8 @@ def _run_episode(renderer) -> str:
                 "predictions": predictions,
                 "v_cmd": v_cmd,
                 "steer": steer,
+                "speed_limit": v_limit,
+                "route_links": map_mgr.get_route_links(),
             }
         )
 
@@ -217,6 +224,7 @@ def _run_episode(renderer) -> str:
             f"估计:({est_state['x']:6.2f}, {est_state['y']:5.2f}) | "
             f"loc_err:{loc_err:4.2f} | "
             f"v_cmd:{v_cmd:5.2f} | "
+            f"限速:{(f'{v_limit:5.2f}' if v_limit is not None else '  -  ')} | "
             f"预测:{len(predictions)} | "
             f"感知:共{len(fused_obstacles)}个(融合{fusion_count}/激光{lidar_only}/视觉{camera_only}) | "
             f"告警:{highest_alert}"

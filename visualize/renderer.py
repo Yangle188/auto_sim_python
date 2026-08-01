@@ -125,6 +125,7 @@ class Renderer:
         (self._line_waypoints,) = self.ax.plot(
             [], [], "s-", color="#7f7f7f", markersize=5, linewidth=1.0, label="waypoints"
         )
+        self._route_link_lines: List[Any] = []
         (self._line_path,) = self.ax.plot(
             [], [], "-", color="#1f77b4", linewidth=1.2, alpha=0.85, label="dense path"
         )
@@ -191,10 +192,16 @@ class Renderer:
         obstacles = list(snapshot.get("obstacles") or [])
         fused = list(snapshot.get("fused") or [])
 
-        if waypoints:
+        route_links = list(snapshot.get("route_links") or [])
+        if route_links:
+            self._redraw_route_links(route_links)
+            self._line_waypoints.set_data([], [])
+        elif waypoints:
+            self._clear_route_link_lines()
             wx, wy = zip(*waypoints)
             self._line_waypoints.set_data(wx, wy)
         else:
+            self._clear_route_link_lines()
             self._line_waypoints.set_data([], [])
 
         if path:
@@ -240,11 +247,16 @@ class Renderer:
         state = snapshot.get("state", "?")
         v_cmd = float(snapshot.get("v_cmd", 0.0))
         steer = float(snapshot.get("steer", 0.0))
+        speed_limit = snapshot.get("speed_limit")
+        if speed_limit is None:
+            limit_str = "  n/a"
+        else:
+            limit_str = f"{float(speed_limit):5.2f}"
         err_line = f"  loc_err={err_xy:5.2f}m" if err_xy is not None else ""
         pause_tag = "  [PAUSED]" if self._paused else ""
         self._hud.set_text(
             f"t={t:5.2f}s  state={state}{pause_tag}\n"
-            f"speed={speed:5.2f} m/s  v_cmd={v_cmd:5.2f}\n"
+            f"speed={speed:5.2f} m/s  v_cmd={v_cmd:5.2f}  limit={limit_str}\n"
             f"steer={math.degrees(steer):6.2f} deg  pos=({x:6.2f},{y:5.2f})"
             f"{err_line}"
         )
@@ -282,6 +294,7 @@ class Renderer:
         self._clear_patches(self._obstacle_patches)
         self._clear_patches(self._fused_scatters)
         self._clear_patches(self._pred_lines)
+        self._clear_route_link_lines()
         self._refresh_title()
         if self._interactive and not self._closed:
             self.fig.canvas.draw_idle()
@@ -476,6 +489,55 @@ class Renderer:
                 zorder=4,
             )
             self._pred_lines.append(ln)
+
+    def _clear_route_link_lines(self) -> None:
+        self._clear_patches(self._route_link_lines)
+
+    @staticmethod
+    def _color_for_speed_limit(v: float, v_min: float, v_max: float) -> str:
+        """限速低→橙红，高→青绿。"""
+        if v_max <= v_min + 1e-9:
+            t = 0.5
+        else:
+            t = max(0.0, min(1.0, (v - v_min) / (v_max - v_min)))
+        # t=0 → #d62728, t=1 → #2ca02c
+        r = int(214 + (44 - 214) * t)
+        g = int(39 + (160 - 39) * t)
+        b = int(40 + (44 - 40) * t)
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    def _redraw_route_links(self, route_links: Sequence[Any]) -> None:
+        self._clear_route_link_lines()
+        limits = [
+            float(link.get("speed_limit", 0.0))
+            for link in route_links
+            if isinstance(link, dict)
+        ]
+        v_min = min(limits) if limits else 0.0
+        v_max = max(limits) if limits else 1.0
+        for i, link in enumerate(route_links):
+            if not isinstance(link, dict):
+                continue
+            pts = list(link.get("points") or [])
+            if len(pts) < 2:
+                continue
+            xs = [float(p[0]) for p in pts]
+            ys = [float(p[1]) for p in pts]
+            v = float(link.get("speed_limit", 0.0))
+            color = self._color_for_speed_limit(v, v_min, v_max)
+            label = "route links" if i == 0 else None
+            (ln,) = self.ax.plot(
+                xs,
+                ys,
+                "s-",
+                color=color,
+                markersize=4,
+                linewidth=2.0,
+                alpha=0.9,
+                zorder=2,
+                label=label,
+            )
+            self._route_link_lines.append(ln)
 
     def _update_bounds(
         self,
