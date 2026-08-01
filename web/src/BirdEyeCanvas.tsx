@@ -390,11 +390,24 @@ export function BirdEyeCanvas({ snapshot, paused }: Props) {
       ctx.stroke();
     };
 
-    // 自车用真实航向绘制（可看出相对车道的姿态）；相机不跟 yaw
+    // 自车真值（控制跟的就是它）；估计只画后轴点，避免 GPS 噪声车体「假画龙」抢镜
     drawEgo(ego.x, ego.y, ego.yaw, "rgba(251,191,36,0.85)", "#fb923c");
     if (snapshot.vehicle_est) {
       const e = snapshot.vehicle_est;
-      drawEgo(e.x, e.y, e.yaw, "transparent", "#22d3ee", true);
+      const [ex, ey] = txy(e.x, e.y);
+      ctx.strokeStyle = "#22d3ee";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.arc(ex, ey, 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(ex - 5, ey);
+      ctx.lineTo(ex + 5, ey);
+      ctx.moveTo(ex, ey - 5);
+      ctx.lineTo(ex, ey + 5);
+      ctx.stroke();
     }
 
     ctx.strokeStyle = "rgba(251,191,36,0.9)";
@@ -442,10 +455,10 @@ export function BirdEyeCanvas({ snapshot, paused }: Props) {
     lines.forEach((line, i) => ctx.fillText(line, 22, 34 + i * 18));
 
     const legend = [
-      "车道线=世界(道路朝上固定)",
-      "橙框=自车真实姿态",
+      "车道线=世界(道路朝上)",
+      "橙框=自车真值(控制)",
+      "青点=定位估计",
       "滚轮/右下角缩放",
-      "画龙已从控制侧抑制",
     ];
     ctx.fillStyle = "rgba(15,20,25,0.72)";
     ctx.fillRect(12, cssH - 92, 230, 80);

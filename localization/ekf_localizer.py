@@ -205,8 +205,10 @@ class EKFLocalizer:
         S = _mat_add(_mat_mul(H, PHt), self.R)  # 2x2
         S_inv = _invert_2x2(S)
         K = _mat_mul(PHt, S_inv)  # 4x2
-        # GPS 只观测位置：不直接修正速度，避免估计车速被位置残差“拽飞”
-        # 导致状态机 ACTIVE/STANDBY 抖动
+        # GPS 只观测位置：不直接修正 yaw/v。
+        # 否则横向 GPS 噪声会通过相关项拧航向，估计车在画面上「画龙」。
+        K[2][0] = 0.0
+        K[2][1] = 0.0
         K[3][0] = 0.0
         K[3][1] = 0.0
 
@@ -214,7 +216,7 @@ class EKFLocalizer:
         self.x = [
             self.x[0] + dx[0],
             self.x[1] + dx[1],
-            _normalize_angle(self.x[2] + dx[2]),
+            self.x[2],  # 航向仅由 predict(steer) 传播
             self.x[3],  # 速度仅由 predict(acc) 传播
         ]
 
