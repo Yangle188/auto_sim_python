@@ -3,5 +3,11 @@
 
 matplotlib>=3.8
 
+# Web API（场景配置 + WebSocket 推帧）
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.0
+httpx>=0.27
+
 # 开发与测试
 pytest>=8.0

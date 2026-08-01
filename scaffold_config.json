@@ -26,6 +26,11 @@
     "map/route.py",
     "map/map_manager.py",
     "map/demo_routes.py",
+    "sim_server/__init__.py",
+    "sim_server/__main__.py",
+    "sim_server/scene_schema.py",
+    "sim_server/session.py",
+    "sim_server/app.py",
     "planning/__init__.py",
     "planning/config.py",
     "planning/path_planner.py",
@@ -55,6 +60,7 @@
     "tests/test_visualize.py",
     "tests/test_localization.py",
     "tests/test_prediction.py",
-    "tests/test_map.py"
+    "tests/test_map.py",
+    "tests/test_sim_session.py"
   ]
 }

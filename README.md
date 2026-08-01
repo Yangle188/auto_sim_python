@@ -18,6 +18,8 @@ PythonProject/
 ├── localization/           # 自行车模型 EKF 定位（GPS + 里程计）
 ├── prediction/             # 恒速障碍预测（跟踪 + 短时外推）
 ├── map/                    # 路线下发（Link/Route）与限速查询
+├── sim_server/             # FastAPI + SimSession（Web 推流 / 场景 API）
+├── web/                    # Vite + React 鸟瞰与配置面板
 ├── tests/                  # 单元测试
 ├── docs/                   # 开发总结等文档
 ├── HANDOFF.md              # 交接文档（继续开发请先读）
@@ -57,6 +59,7 @@ PythonProject/
 - **localization** — 4 状态 EKF（里程计预测 + 含噪 GPS）；规划/控制吃估计位姿，感知吃真值
 - **prediction** — 融合检测最近邻跟踪 + 恒速短时预测，供 TrajPlanner 前瞻减速
 - **map** — Route/Link 路线下发与限速查询；`main` 下发演示路线，纵向规划吃 `speed_limit`
+- **sim_server / web** — WebSocket 实时鸟瞰 + 场景配置（路线/障碍 Apply & Restart）；CLI matplotlib 并行保留
 
 ## 规划中模块
 
@@ -65,6 +68,7 @@ PythonProject/
 ## 文档
 
 - [HANDOFF.md](HANDOFF.md) — 交接与继续开发指引
+- [docs/SUMMARY_2026-08-01_web_viz.md](docs/SUMMARY_2026-08-01_web_viz.md) — Web 实时渲染与场景配置
 - [docs/SUMMARY_2026-08-01_map.md](docs/SUMMARY_2026-08-01_map.md) — map 模块开发总结
 - [docs/SUMMARY_2026-08-01_prediction.md](docs/SUMMARY_2026-08-01_prediction.md) — prediction 模块开发总结
 - [docs/SUMMARY_2026-08-01_localization.md](docs/SUMMARY_2026-08-01_localization.md) — localization / EKF 开发总结
@@ -81,9 +85,9 @@ python project_scaffold.py
 ## 环境要求
 
 - Python 3.10+（已在 3.14 下验证）
-- 核心仿真、EKF、预测无第三方数值库依赖；鸟瞰可视化需要 `matplotlib`（见 `requirements.txt`）
-- 关闭窗口渲染：将 `visualize/config.py` 中 `ENABLE_VISUALIZE` 设为 `False`
-- 鸟瞰交互：`Space` 暂停/继续；`Replay` 按钮或 `r` 重播；结束后窗口默认保持，关窗或 `q` 退出（`HOLD_ON_FINISH`）
+- 核心仿真、EKF、预测无第三方数值库依赖；CLI 鸟瞰需要 `matplotlib`；Web 需要 `fastapi`/`uvicorn` 与 Node.js（构建 `web/`）
+- 关闭 CLI 窗口渲染：将 `visualize/config.py` 中 `ENABLE_VISUALIZE` 设为 `False`
+- Web：`python -m sim_server`，开发时另开 `cd web && npm run dev`；生产先 `npm run build`
 - 变更记录见 [CHANGELOG.md](CHANGELOG.md)
 
 ## 快速开始
@@ -93,11 +97,16 @@ python project_scaffold.py
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
-# 安装依赖（pytest + matplotlib）
+# 安装依赖
 pip install -r requirements.txt
 
-# 运行仿真（默认弹出鸟瞰图）
+# CLI 仿真（matplotlib 鸟瞰）
 python main.py
+
+# Web 仿真（一键：必要时自动 npm build，开服务并打开浏览器）
+python run_web.py
+# 或: ./run_web.sh
+# 等价手动: cd web && npm run build && python -m sim_server
 
 # 运行全部测试
 pytest

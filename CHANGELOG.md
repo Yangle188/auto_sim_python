@@ -4,6 +4,15 @@
 
 ## 2026-08-01
 
+### Web Viz & Scene Config
+
+- 新增 `SimSession` + `SceneConfig`：仿真步进与场景注入从 `main` 抽离，snapshot JSON 化。
+- FastAPI：`/api/scene`、`/api/control`、WebSocket `/ws/sim` 实时推帧。
+- React（Vite）鸟瞰 Canvas + 路线/障碍配置面板；**Apply & Restart** 重开 episode。
+- CLI `python main.py` 仍走 matplotlib；入口 `python -m sim_server`。
+- 一键脚本：`python run_web.py` / `./run_web.sh`（必要时自动 build、启动服务并打开浏览器）。
+- 自定义路线：路段支持中文名 / 主辅路 / 机动（左/右转等）；默认「城市：左右转+主辅路」预设；Web 界面与鸟瞰 HUD/图例中文化。
+
 ### Map
 
 - 新增路线下发：`Link` / `Route` / `MapManager`；演示三段不同限速路线。
@@ -39,4 +48,4 @@
 ### Docs / Tooling
 
 - 交接文档 `HANDOFF.md`、各模块 `docs/SUMMARY_*.md`、`README.md`、`scaffold_config.json` 同步。
-- 运行依赖：`matplotlib`（可视化）；核心仿真 / EKF / 预测仍无强制数值库。
+- 运行依赖：`matplotlib`（CLI 可视化）、`fastapi`/`uvicorn`（Web）；核心仿真 / EKF / 预测仍无强制数值库。

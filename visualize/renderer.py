@@ -26,6 +26,13 @@ _SOURCE_COLOR = {
 }
 
 
+def _snap_get(obj: Any, name: str, default: Any = None) -> Any:
+    """兼容 snapshot 中的对象或 dict。"""
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
 class NullRenderer:
     """关闭可视化或缺少 matplotlib 时的空实现。"""
 
@@ -431,12 +438,13 @@ class Renderer:
     def _redraw_obstacles(self, obstacles: Sequence[Any]) -> None:
         self._clear_patches(self._obstacle_patches)
         for obs in obstacles:
-            ox = getattr(obs, "x", None)
-            oy = getattr(obs, "y", None)
-            w = getattr(obs, "width", None)
-            h = getattr(obs, "height", None)
+            ox = _snap_get(obs, "x")
+            oy = _snap_get(obs, "y")
+            w = _snap_get(obs, "width")
+            h = _snap_get(obs, "height")
             if ox is None or oy is None or w is None or h is None:
                 continue
+            ox, oy, w, h = float(ox), float(oy), float(w), float(h)
             rect = self._Rectangle(
                 (ox - 0.5 * w, oy - 0.5 * h),
                 w,
@@ -453,15 +461,15 @@ class Renderer:
     def _redraw_fused(self, fused: Sequence[Any]) -> None:
         self._clear_patches(self._fused_scatters)
         for obs in fused:
-            ox = getattr(obs, "x", None)
-            oy = getattr(obs, "y", None)
+            ox = _snap_get(obs, "x")
+            oy = _snap_get(obs, "y")
             if ox is None or oy is None:
                 continue
-            source = getattr(obs, "source", "unknown")
+            source = _snap_get(obs, "source", "unknown")
             color = _SOURCE_COLOR.get(source, "#9467bd")
             (sc,) = self.ax.plot(
-                [ox],
-                [oy],
+                [float(ox)],
+                [float(oy)],
                 "o",
                 markersize=9,
                 markerfacecolor="none",
@@ -474,7 +482,7 @@ class Renderer:
     def _redraw_predictions(self, predictions: Sequence[Any]) -> None:
         self._clear_patches(self._pred_lines)
         for pred in predictions:
-            traj = getattr(pred, "trajectory", None) or ()
+            traj = _snap_get(pred, "trajectory") or ()
             if len(traj) < 2:
                 continue
             xs = [float(p[0]) for p in traj]
@@ -556,12 +564,13 @@ class Renderer:
             xs.append(px)
             ys.append(py)
         for obs in obstacles:
-            ox = getattr(obs, "x", None)
-            oy = getattr(obs, "y", None)
+            ox = _snap_get(obs, "x")
+            oy = _snap_get(obs, "y")
             if ox is None or oy is None:
                 continue
-            w = float(getattr(obs, "width", 0.0) or 0.0)
-            h = float(getattr(obs, "height", 0.0) or 0.0)
+            ox, oy = float(ox), float(oy)
+            w = float(_snap_get(obs, "width", 0.0) or 0.0)
+            h = float(_snap_get(obs, "height", 0.0) or 0.0)
             xs.extend([ox - 0.5 * w, ox + 0.5 * w])
             ys.extend([oy - 0.5 * h, oy + 0.5 * h])
 

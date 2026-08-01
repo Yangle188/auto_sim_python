@@ -54,8 +54,11 @@ class MapManager:
         return [
             {
                 "link_id": link.link_id,
-                "points": list(link.points),
-                "speed_limit": link.speed_limit,
+                "points": [[float(x), float(y)] for x, y in link.points],
+                "speed_limit": float(link.speed_limit),
+                "name": getattr(link, "name", "") or "",
+                "road_class": getattr(link, "road_class", "main") or "main",
+                "maneuver": getattr(link, "maneuver", "straight") or "straight",
             }
             for link in self._route.links
         ]
