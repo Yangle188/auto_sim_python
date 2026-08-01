@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from sim_server.scene_schema import (
     SceneConfig,
+    acc_scene_config,
     default_scene_config,
     ObstacleIn,
     RouteLinkIn,
@@ -15,11 +16,21 @@ from sim_server.app import app
 from map.demo_routes import build_urban_turn_route
 
 
-def test_default_scene_is_urban_turns():
+def test_default_scene_is_acc_highway():
     cfg = default_scene_config()
     route = cfg.to_route()
+    assert route.route_id == "acc_highway"
+    assert len(route.links) >= 2
+    assert cfg.obstacles
+    assert cfg.obstacles[0].dynamic
+    assert cfg.obstacles[0].motion is not None
+    assert cfg.obstacles[0].motion.type == "scripted"
+
+
+def test_urban_scene_still_available():
+    cfg = urban_scene_config()
+    route = cfg.to_route()
     assert route.route_id == "urban_turns"
-    assert len(route.links) >= 5
     classes = {lk.road_class for lk in route.links}
     maneuvers = {lk.maneuver for lk in route.links}
     assert "main" in classes and "aux" in classes
@@ -76,11 +87,12 @@ def test_api_scene_and_control():
     assert r.status_code == 200
     body = r.json()
     assert "draft" in body
-    assert body["draft"]["route_id"] == "urban_turns"
+    assert body["draft"]["route_id"] == "acc_highway"
 
     r = client.get("/api/presets")
     assert r.status_code == 200
     presets = r.json()
+    assert "acc_highway" in presets["scenes"]
     assert "urban_turns" in presets["scenes"]
     assert "simple" in presets["scenes"]
 
@@ -104,8 +116,22 @@ def test_api_scene_and_control():
 
 def test_list_presets():
     p = list_presets()
+    assert "acc_highway" in p
     assert "urban_turns" in p
+    assert "Cut-in" in p["acc_highway"]["title"] or "跟车" in p["acc_highway"]["title"]
     assert "左右转" in p["urban_turns"]["title"] or "主辅" in p["urban_turns"]["title"]
+
+
+def test_session_snapshot_has_multilane_and_heading_up():
+    sess = SimSession(acc_scene_config())
+    sess.start()
+    snap = sess.step_once()
+    assert snap is not None
+    assert snap.get("num_lanes") == 3
+    assert snap.get("lane_markings")
+    assert snap.get("view", {}).get("mode") == "heading_up"
+    # 最外侧边界约为 ±1.5 * 3.2
+    assert abs(snap["lane_left"][0][1] - 4.8) < 0.2
 
 
 def test_dynamic_obstacle_requires_motion():

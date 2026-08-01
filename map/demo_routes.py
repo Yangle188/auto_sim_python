@@ -1,7 +1,35 @@
 # map/demo_routes.py
-"""教学用路线：简易直线；城市：左右转 + 主辅路切换。"""
+"""教学用路线：简易直线；城市：左右转 + 主辅路切换；三车道 ACC。"""
 from .link import Link
 from .route import Route
+
+
+def build_acc_highway_route() -> Route:
+    """
+    三车道直行走廊（自车走中间车道中心线 y=0）：
+    用于跟车 / cut-in / cut-out 演示。
+    """
+    return Route(
+        route_id="acc_highway",
+        links=(
+            Link(
+                "H1",
+                ((0.0, 0.0), (120.0, 0.0)),
+                12.0,
+                name="三车道直行前段",
+                road_class="main",
+                maneuver="straight",
+            ),
+            Link(
+                "H2",
+                ((120.0, 0.0), (320.0, 0.0)),
+                12.0,
+                name="三车道直行后段",
+                road_class="main",
+                maneuver="straight",
+            ),
+        ),
+    )
 
 
 def build_demo_route() -> Route:

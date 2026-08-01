@@ -101,10 +101,13 @@ def test_renderer_replay_request_flag():
 
 def test_get_lookahead_point_for_viz():
     """控制模块公开预瞄点查询，供可视化使用"""
-    ctrl = PurePursuit(lookahead=8.0)
+    ctrl = PurePursuit()
     path = [(0.0, 0.0), (5.0, 0.0), (12.0, 0.0), (30.0, 0.0)]
+    # speed=0 → Ld 按 1m/s 下限算，再夹到 LOOKAHEAD_MIN(=6)
     pt = ctrl.get_lookahead_point({"x": 0.0, "y": 0.0, "yaw": 0.0, "speed": 0.0}, path)
-    assert pt == (12.0, 0.0)
+    assert pt is not None
+    assert abs(pt[0] - 6.0) < 1e-6
+    assert abs(pt[1]) < 1e-9
     assert ctrl.get_lookahead_point({"x": 0.0, "y": 0.0}, []) is None
     print("✅ get_lookahead_point 测试通过")
 

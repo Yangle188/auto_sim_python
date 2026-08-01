@@ -4,6 +4,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from config import DT, STATE_OFF, STATE_ACTIVE, STATE_STANDBY, STATE_PASSIVE, HMI_INFO
+
+_ACC_VEL_EPS = 1e-3
 from framework.state_machine import (
     AutoDriveStateMachine,
     EV_POWER_ON,
@@ -30,7 +32,7 @@ from localization.config import GPS_PERIOD
 from prediction.predictor import ObstaclePredictor
 from map.map_manager import MapManager
 
-from .scene_schema import SceneConfig, default_scene_config
+from .scene_schema import SceneConfig, default_scene_config, evaluate_motion
 
 
 class SimSession:
@@ -120,6 +122,7 @@ class SimSession:
         self.camera = CameraSimulator()
         self.perception_fusion = PerceptionFusion()
         self.controller = PurePursuit()
+        self.controller.reset()
         self.path_planner = PathPlanner()
         self.traj_planner = TrajPlanner()
         self.predictor = ObstaclePredictor()
@@ -172,8 +175,26 @@ class SimSession:
     def _update_dynamic_obstacles(self) -> None:
         t = self.sim_time
         for obs, motion in self._dynamic:
-            obs.x = motion.x0 + motion.vx * t
-            obs.y = motion.y0 + motion.vy * t
+            ox, oy = evaluate_motion(motion, t)
+            obs.x = ox
+            obs.y = oy
+
+    def _truth_leads(self) -> List[Dict[str, float]]:
+        """由脚本/线性运动求真值前车状态，供 ACC（避免感知噪声误跟）。"""
+        t = self.sim_time
+        out: List[Dict[str, float]] = []
+        for obs, motion in self._dynamic:
+            x0, y0 = evaluate_motion(motion, t)
+            x1, y1 = evaluate_motion(motion, t + max(DT, _ACC_VEL_EPS))
+            out.append(
+                {
+                    "x": float(x0),
+                    "y": float(y0),
+                    "vx": float((x1 - x0) / max(DT, _ACC_VEL_EPS)),
+                    "vy": float((y1 - y0) / max(DT, _ACC_VEL_EPS)),
+                }
+            )
+        return out
 
     def _advance_frame(self) -> Dict[str, Any]:
         if (
@@ -227,22 +248,36 @@ class SimSession:
         state = self.state_machine.get_state()
         v_cmd = self.traj_planner.cruise_speed if v_limit is None else v_limit
 
+        truth_leads = self._truth_leads()
+        # 横向控制用真值位姿：EKF 位置噪声会诱发 Pure Pursuit 画龙；
+        # 规划仍用估计；估计轨迹仅叠加显示。
+        ctrl_pose = true_state
         if state == STATE_STANDBY:
             v_cmd = self.traj_planner.plan(
-                est_state, path, self.fused_obstacles, self.predictions, speed_limit=v_limit
+                est_state,
+                path,
+                self.fused_obstacles,
+                self.predictions,
+                speed_limit=v_limit,
+                leads=truth_leads,
             )
             if v_cmd >= self.traj_planner.cruise_speed - 1e-6:
-                _, steer = self.controller.compute(est_state, path)
+                _, steer = self.controller.compute(ctrl_pose, path)
                 acc = STANDBY_ACC
             else:
                 acc, steer = self.controller.compute(
-                    est_state, path, target_speed=v_cmd
+                    ctrl_pose, path, target_speed=v_cmd
                 )
         elif state == STATE_ACTIVE:
             v_cmd = self.traj_planner.plan(
-                est_state, path, self.fused_obstacles, self.predictions, speed_limit=v_limit
+                est_state,
+                path,
+                self.fused_obstacles,
+                self.predictions,
+                speed_limit=v_limit,
+                leads=truth_leads,
             )
-            acc, steer = self.controller.compute(est_state, path, target_speed=v_cmd)
+            acc, steer = self.controller.compute(ctrl_pose, path, target_speed=v_cmd)
 
         if v_cmd <= 1e-6:
             steer = 0.0
@@ -276,7 +311,7 @@ class SimSession:
 
         self.state_machine.step(DT)
 
-        lookahead = self.controller.get_lookahead_point(est_state, path)
+        lookahead = self.controller.get_lookahead_point(true_state, path)
         self._v_cmd = v_cmd
         self._steer = steer
         self._v_limit = v_limit
@@ -305,6 +340,7 @@ class SimSession:
         v_limit: Optional[float],
     ) -> Dict[str, Any]:
         lane = self.world.get_lane_boundaries(path if path else self.world.reference_path)
+        lead = self.traj_planner.last_lead
         return {
             "t": self.sim_time,
             "state": self.state_machine.get_state(),
@@ -314,8 +350,17 @@ class SimSession:
             "path": [list(p) for p in path],
             "lookahead": list(lookahead) if lookahead is not None else None,
             "lane_width": float(lane["lane_width"]),
+            "num_lanes": int(lane.get("num_lanes", 1)),
             "lane_left": [list(p) for p in lane["left"]],
             "lane_right": [list(p) for p in lane["right"]],
+            "lane_markings": [
+                {
+                    "role": m.get("role", ""),
+                    "style": m.get("style", "solid"),
+                    "points": [list(p) for p in (m.get("points") or [])],
+                }
+                for m in (lane.get("markings") or [])
+            ],
             "vehicle_geom": self.world.get_vehicle_geom(),
             "obstacles": [
                 {
@@ -331,6 +376,8 @@ class SimSession:
                 {
                     "obs_id": getattr(p, "obs_id", None),
                     "coasting": bool(getattr(p, "coasting", False)),
+                    "vx": float(getattr(p, "vx", 0.0) or 0.0),
+                    "vy": float(getattr(p, "vy", 0.0) or 0.0),
                     "trajectory": [list(pt) for pt in (p.trajectory or [])],
                 }
                 for p in self.predictions
@@ -338,8 +385,16 @@ class SimSession:
             "v_cmd": float(v_cmd),
             "steer": float(steer),
             "speed_limit": None if v_limit is None else float(v_limit),
+            "acc": None
+            if lead is None
+            else {
+                "d_gap": float(lead["d_gap"]),
+                "v_lead": float(lead["v_lead"]),
+                "source": str(lead["source"]),
+            },
             "route_links": self.map_mgr.get_route_links(),
             "session_status": self.status,
+            "view": {"mode": "heading_up"},
         }
 
     def log_line(self, snapshot: Dict[str, Any]) -> str:

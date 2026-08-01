@@ -20,13 +20,26 @@ export interface LinearMotion {
   y0: number;
 }
 
+export interface MotionKeyframe {
+  t: number;
+  x: number;
+  y: number;
+}
+
+export interface ScriptedMotion {
+  type: "scripted";
+  keyframes: MotionKeyframe[];
+}
+
+export type Motion = LinearMotion | ScriptedMotion;
+
 export interface ObstacleIn {
   x: number;
   y: number;
   width: number;
   height: number;
   dynamic: boolean;
-  motion: LinearMotion | null;
+  motion: Motion | null;
 }
 
 export interface SceneConfig {
@@ -51,6 +64,13 @@ export interface VehicleGeom {
   front_overhang?: number;
   ref_point: string;
   lane_width: number;
+  num_lanes?: number;
+}
+
+export interface LaneMarking {
+  role: string;
+  style: "solid" | "dashed" | string;
+  points: Point[];
 }
 
 export interface Snapshot {
@@ -62,17 +82,21 @@ export interface Snapshot {
   path: Point[];
   lookahead: Point | null;
   lane_width?: number;
+  num_lanes?: number;
   lane_left?: Point[];
   lane_right?: Point[];
+  lane_markings?: LaneMarking[];
   vehicle_geom?: VehicleGeom;
   obstacles: { x: number; y: number; width: number; height: number }[];
   fused: { x: number; y: number; source?: string }[];
-  predictions: { trajectory: Point[]; coasting?: boolean }[];
+  predictions: { trajectory: Point[]; coasting?: boolean; vx?: number; vy?: number }[];
   v_cmd: number;
   steer: number;
   speed_limit: number | null;
+  acc?: { d_gap: number; v_lead: number; source: string } | null;
   route_links: RouteLink[];
   session_status?: string;
+  view?: { mode?: string };
 }
 
 export interface StatusPayload {

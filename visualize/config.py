@@ -17,6 +17,12 @@ PAUSE_SEC = 0.001
 # 坐标轴相对场景边界的边距（m）
 VIEW_PADDING = 8.0
 
+# 车头向上视野（m）
+HEADING_UP = True
+VIEW_AHEAD = 55.0
+VIEW_BEHIND = 18.0
+VIEW_SIDE = 22.0
+
 # 自车外形与车道宽度：与 simulator 保持一致（后轴中心为参考点）
 from simulator.config import (  # noqa: E402
     LANE_WIDTH,

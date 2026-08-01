@@ -21,28 +21,30 @@ def test_empty_path_returns_zero():
 
 
 def test_find_lookahead_first_far_enough():
-    """选取第一个距离 >= lookahead 的路点"""
-    ctrl = PurePursuit(lookahead=8.0)
+    """沿路径弧长前进 ld，段内插值"""
+    ctrl = PurePursuit()
     path = [(0.0, 0.0), (5.0, 0.0), (12.0, 0.0), (30.0, 0.0)]
-    target = ctrl._find_lookahead_point(0.0, 0.0, path)
-    assert target == (12.0, 0.0)
+    target = ctrl._find_lookahead_point(0.0, 0.0, path, ld=8.0)
+    assert abs(target[0] - 8.0) < 1e-9
+    assert abs(target[1]) < 1e-9
     print("✅ 预瞄点选取测试通过")
 
 
 def test_find_lookahead_skips_passed_points():
-    """车已驶过起点时，不应再选身后路点作为预瞄点"""
-    ctrl = PurePursuit(lookahead=8.0)
+    """车已驶过起点时，从投影点向前预瞄，不回头"""
+    ctrl = PurePursuit()
     path = [(0.0, 0.0), (50.0, 0.0), (100.0, 0.0)]
-    target = ctrl._find_lookahead_point(10.0, 0.0, path)
-    assert target == (50.0, 0.0)
+    target = ctrl._find_lookahead_point(10.0, 0.0, path, ld=8.0)
+    assert abs(target[0] - 18.0) < 1e-9
+    assert abs(target[1]) < 1e-9
     print("✅ 跳过身后路点测试通过")
 
 
 def test_find_lookahead_fallback_to_end():
     """前方没有足够远的路点时取终点"""
-    ctrl = PurePursuit(lookahead=20.0)
+    ctrl = PurePursuit()
     path = [(0.0, 0.0), (5.0, 0.0), (10.0, 0.0)]
-    target = ctrl._find_lookahead_point(0.0, 0.0, path)
+    target = ctrl._find_lookahead_point(0.0, 0.0, path, ld=20.0)
     assert target == (10.0, 0.0)
     print("✅ 预瞄点终点回退测试通过")
 

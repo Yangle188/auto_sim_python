@@ -297,7 +297,7 @@ export function ConfigPanel({
                 ×
               </button>
             </div>
-            {o.dynamic && o.motion && (
+            {o.dynamic && o.motion && o.motion.type === "linear" && (
               <div className="card-row sub">
                 <span className="muted">vx</span>
                 <input
@@ -305,11 +305,13 @@ export function ConfigPanel({
                   type="number"
                   step={0.1}
                   value={o.motion.vx}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const m = o.motion;
+                    if (!m || m.type !== "linear") return;
                     updateObstacle(idx, {
-                      motion: { ...o.motion!, vx: Number(e.target.value) },
-                    })
-                  }
+                      motion: { ...m, vx: Number(e.target.value) },
+                    });
+                  }}
                 />
                 <span className="muted">vy</span>
                 <input
@@ -317,11 +319,13 @@ export function ConfigPanel({
                   type="number"
                   step={0.1}
                   value={o.motion.vy}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const m = o.motion;
+                    if (!m || m.type !== "linear") return;
                     updateObstacle(idx, {
-                      motion: { ...o.motion!, vy: Number(e.target.value) },
-                    })
-                  }
+                      motion: { ...m, vy: Number(e.target.value) },
+                    });
+                  }}
                 />
                 <span className="muted">x0</span>
                 <input
@@ -329,11 +333,13 @@ export function ConfigPanel({
                   type="number"
                   step={0.5}
                   value={o.motion.x0}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const m = o.motion;
+                    if (!m || m.type !== "linear") return;
                     updateObstacle(idx, {
-                      motion: { ...o.motion!, x0: Number(e.target.value) },
-                    })
-                  }
+                      motion: { ...m, x0: Number(e.target.value) },
+                    });
+                  }}
                 />
                 <span className="muted">y0</span>
                 <input
@@ -341,12 +347,21 @@ export function ConfigPanel({
                   type="number"
                   step={0.5}
                   value={o.motion.y0}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const m = o.motion;
+                    if (!m || m.type !== "linear") return;
                     updateObstacle(idx, {
-                      motion: { ...o.motion!, y0: Number(e.target.value) },
-                    })
-                  }
+                      motion: { ...m, y0: Number(e.target.value) },
+                    });
+                  }}
                 />
+              </div>
+            )}
+            {o.dynamic && o.motion && o.motion.type === "scripted" && (
+              <div className="card-row sub">
+                <span className="muted">
+                  脚本运动 · {o.motion.keyframes.length} 关键帧（跟车/切入/切出剧本）
+                </span>
               </div>
             )}
           </div>

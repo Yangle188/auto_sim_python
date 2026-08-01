@@ -1,13 +1,18 @@
 # sim_server/scene_schema.py
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Annotated, Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from map.link import Link
 from map.route import Route
-from map.demo_routes import build_demo_route, build_urban_turn_route
+from map.demo_routes import (
+    build_acc_highway_route,
+    build_demo_route,
+    build_urban_turn_route,
+)
+from simulator.config import LANE_WIDTH, VEHICLE_LENGTH, VEHICLE_WIDTH
 
 
 class LinearMotion(BaseModel):
@@ -16,6 +21,29 @@ class LinearMotion(BaseModel):
     vy: float = 0.0
     x0: float
     y0: float
+
+
+class MotionKeyframe(BaseModel):
+    t: float
+    x: float
+    y: float
+
+
+class ScriptedMotion(BaseModel):
+    """关键帧线性插值运动（用于 cut-in / cut-out 剧本）。"""
+
+    type: Literal["scripted"] = "scripted"
+    keyframes: List[MotionKeyframe]
+
+    @field_validator("keyframes")
+    @classmethod
+    def _min_two(cls, v: List[MotionKeyframe]) -> List[MotionKeyframe]:
+        if len(v) < 2:
+            raise ValueError("scripted motion 至少需要 2 个关键帧")
+        return sorted(v, key=lambda k: k.t)
+
+
+Motion = Annotated[Union[LinearMotion, ScriptedMotion], Field(discriminator="type")]
 
 
 class RouteLinkIn(BaseModel):
@@ -47,7 +75,7 @@ class ObstacleIn(BaseModel):
     width: float = 2.0
     height: float = 2.0
     dynamic: bool = False
-    motion: Optional[LinearMotion] = None
+    motion: Optional[Motion] = None
 
     @model_validator(mode="after")
     def _dynamic_needs_motion(self) -> "ObstacleIn":
@@ -59,10 +87,10 @@ class ObstacleIn(BaseModel):
 
 
 class SceneConfig(BaseModel):
-    route_id: str = "urban_turns"
+    route_id: str = "acc_highway"
     links: List[RouteLinkIn]
     obstacles: List[ObstacleIn] = Field(default_factory=list)
-    duration_s: float = 35.0
+    duration_s: float = 40.0
 
     @field_validator("duration_s")
     @classmethod
@@ -109,8 +137,71 @@ def _route_to_links(route: Route) -> List[RouteLinkIn]:
     return out
 
 
+def evaluate_motion(motion: Motion, t: float) -> Tuple[float, float]:
+    """按仿真时间求动态障碍世界坐标。"""
+    if isinstance(motion, LinearMotion) or getattr(motion, "type", None) == "linear":
+        return (
+            float(motion.x0) + float(motion.vx) * t,
+            float(motion.y0) + float(motion.vy) * t,
+        )
+
+    kfs: List[MotionKeyframe] = list(motion.keyframes)
+    if t <= kfs[0].t:
+        return float(kfs[0].x), float(kfs[0].y)
+    if t >= kfs[-1].t:
+        return float(kfs[-1].x), float(kfs[-1].y)
+    for i in range(len(kfs) - 1):
+        a, b = kfs[i], kfs[i + 1]
+        if a.t <= t <= b.t:
+            den = b.t - a.t
+            u = 0.0 if den <= 1e-12 else (t - a.t) / den
+            return (
+                float(a.x) + u * (float(b.x) - float(a.x)),
+                float(a.y) + u * (float(b.y) - float(a.y)),
+            )
+    return float(kfs[-1].x), float(kfs[-1].y)
+
+
+def acc_scene_config() -> SceneConfig:
+    """
+    默认演示：纵向跟车 → 前车 cut-out 加速 → 邻道 cut-in 减速跟随 → 再 cut-out 回巡航。
+
+    车道宽 3.2m：左道 y=+3.2，自车道 y=0，右道 y=-3.2。
+    """
+    route = build_acc_highway_route()
+    lw = LANE_WIDTH
+    lead_w = VEHICLE_WIDTH
+    lead_h = VEHICLE_LENGTH * 0.85
+    # 剧本关键帧：跟车 → 切出后邻道加速保持超前 → 切入减速跟随 → 再切出
+    kfs = [
+        MotionKeyframe(t=0.0, x=32.0, y=0.0),
+        MotionKeyframe(t=11.0, x=32.0 + 5.5 * 11.0, y=0.0),  # 跟车 vx≈5.5
+        MotionKeyframe(t=13.0, x=92.5 + 16.0, y=lw),  # cut-out → 左道
+        MotionKeyframe(t=20.0, x=108.5 + 12.0 * 7.0, y=lw),  # 邻道加速保持超前
+        MotionKeyframe(t=22.0, x=192.5 + 14.0, y=0.0),  # cut-in（仍在自车前方）
+        MotionKeyframe(t=30.0, x=206.5 + 5.5 * 8.0, y=0.0),  # 慢跟
+        MotionKeyframe(t=32.0, x=250.5 + 14.0, y=-lw),  # cut-out → 右道
+        MotionKeyframe(t=42.0, x=264.5 + 12.0 * 10.0, y=-lw),  # 驶离
+    ]
+    return SceneConfig(
+        route_id=route.route_id,
+        links=_route_to_links(route),
+        obstacles=[
+            ObstacleIn(
+                x=kfs[0].x,
+                y=kfs[0].y,
+                width=lead_w,
+                height=lead_h,
+                dynamic=True,
+                motion=ScriptedMotion(type="scripted", keyframes=kfs),
+            ),
+        ],
+        duration_s=42.0,
+    )
+
+
 def urban_scene_config() -> SceneConfig:
-    """默认：左右转 + 主辅路切换。"""
+    """城市：左右转 + 主辅路切换。"""
     route = build_urban_turn_route()
     return SceneConfig(
         route_id=route.route_id,
@@ -158,14 +249,21 @@ def simple_scene_config() -> SceneConfig:
 
 
 def default_scene_config() -> SceneConfig:
-    return urban_scene_config()
+    return acc_scene_config()
 
 
 def list_presets() -> Dict[str, dict]:
     """预设场景目录（供前端下拉）。"""
+    acc = acc_scene_config()
     urban = urban_scene_config()
     simple = simple_scene_config()
     return {
+        "acc_highway": {
+            "id": "acc_highway",
+            "title": "三车道：跟车 / Cut-in / Cut-out",
+            "description": "本车道跟车巡航 → 前车切出加速 → 邻道切入减速跟随 → 再切出回目标车速",
+            "scene": acc.model_dump(),
+        },
         "urban_turns": {
             "id": "urban_turns",
             "title": "城市：左右转 + 主辅路",

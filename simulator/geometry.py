@@ -7,6 +7,7 @@ from typing import List, Sequence, Tuple
 
 from .config import (
     LANE_WIDTH,
+    NUM_LANES,
     REAR_OVERHANG,
     VEHICLE_LENGTH,
     VEHICLE_WIDTH,
@@ -63,13 +64,111 @@ def lane_boundaries(
     centerline: Sequence[Point],
     lane_width: float = LANE_WIDTH,
 ) -> dict:
-    """由中心线生成左右边界（左=+half，右=-half）。"""
+    """由中心线生成单车道左右边界（左=+half，右=-half）。"""
     half = 0.5 * float(lane_width)
     return {
         "lane_width": float(lane_width),
+        "num_lanes": 1,
         "center": [(float(x), float(y)) for x, y in centerline],
         "left": offset_polyline(centerline, half),
         "right": offset_polyline(centerline, -half),
+        "markings": [
+            {
+                "role": "outer_left",
+                "style": "solid",
+                "points": offset_polyline(centerline, half),
+            },
+            {
+                "role": "outer_right",
+                "style": "solid",
+                "points": offset_polyline(centerline, -half),
+            },
+        ],
+        "lane_centers": [[(float(x), float(y)) for x, y in centerline]],
+    }
+
+
+def multi_lane_boundaries(
+    centerline: Sequence[Point],
+    lane_width: float = LANE_WIDTH,
+    num_lanes: int = NUM_LANES,
+) -> dict:
+    """
+    以自车中心线为中间车道，生成多车道标线。
+
+    markings:
+      - outer_left / outer_right: 实线路缘
+      - sep_*: 车道分隔虚线
+    lane_left / lane_right: 最外侧边界（兼容旧字段）
+    """
+    n = max(1, int(num_lanes))
+    if n % 2 == 0:
+        n += 1  # 保证奇数，自车居中
+    half = 0.5 * float(lane_width)
+    half_road = 0.5 * n * float(lane_width)
+
+    center = [(float(x), float(y)) for x, y in centerline]
+    outer_left = offset_polyline(centerline, half_road)
+    outer_right = offset_polyline(centerline, -half_road)
+
+    markings: List[dict] = [
+        {"role": "outer_left", "style": "solid", "points": outer_left},
+        {"role": "outer_right", "style": "solid", "points": outer_right},
+    ]
+
+    # 分隔线：相对中心线 ±1.5w, ±0.5w ...（不含最外缘）
+    k = 1
+    while (k + 0.5) * float(lane_width) < half_road - 1e-9:
+        lat = (k + 0.5) * float(lane_width)
+        markings.append(
+            {
+                "role": f"sep_left_{k}",
+                "style": "dashed",
+                "points": offset_polyline(centerline, lat),
+            }
+        )
+        markings.append(
+            {
+                "role": f"sep_right_{k}",
+                "style": "dashed",
+                "points": offset_polyline(centerline, -lat),
+            }
+        )
+        k += 1
+    # 自车车道左右边界（半宽）也作为虚线分隔（与邻道之间）
+    if n >= 3:
+        markings.append(
+            {
+                "role": "sep_ego_left",
+                "style": "dashed",
+                "points": offset_polyline(centerline, half),
+            }
+        )
+        markings.append(
+            {
+                "role": "sep_ego_right",
+                "style": "dashed",
+                "points": offset_polyline(centerline, -half),
+            }
+        )
+
+    lane_centers: List[List[Point]] = []
+    # 从左到右：+(n//2) ... 0 ... -(n//2)
+    half_n = n // 2
+    for i in range(half_n, -half_n - 1, -1):
+        if i == 0:
+            lane_centers.append(center)
+        else:
+            lane_centers.append(offset_polyline(centerline, i * float(lane_width)))
+
+    return {
+        "lane_width": float(lane_width),
+        "num_lanes": n,
+        "center": center,
+        "left": outer_left,
+        "right": outer_right,
+        "markings": markings,
+        "lane_centers": lane_centers,
     }
 
 

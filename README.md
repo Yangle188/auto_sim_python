@@ -35,12 +35,12 @@ PythonProject/
 |------|------|
 | `config/base_config.py` | 仿真步长 `DT`、AD 状态枚举、HMI 告警等级 |
 | `framework/config.py` | 状态机切换阈值（激活车速范围、自检超时等） |
-| `simulator/config.py` | 动力学 + 车道宽 3.2m、车宽 1.96m、后轴几何 |
+| `simulator/config.py` | 动力学 + 车道 3.2m、三车道、车宽 1.96m、后轴几何 |
 | `perception/config.py` | 激光雷达 / 摄像头检测范围、FOV、噪声、检测概率 |
 | `hmi/config.py` | 告警列表容量等 HMI 参数 |
 | `control/config.py` | 预瞄距离、巡航速、纵向 Kp、STANDBY 加速度 |
-| `planning/config.py` | 路径密化分辨率、巡航速、障碍/终点减速参数 |
-| `visualize/config.py` | 可视化开关、刷新间隔、图尺寸、轨迹长度 |
+| `planning/config.py` | 路径密化、巡航速、ACC 时距/最小间距、障碍减速 |
+| `visualize/config.py` | 可视化开关、heading-up 视野、刷新间隔 |
 | `localization/config.py` | GPS 周期/噪声、过程噪声、初始协方差 |
 | `prediction/config.py` | 预测时域、关联距离、coast、速度阈值 |
 | `map/config.py` | 前方限速前瞻距离、link 衔接容差 |
@@ -50,16 +50,16 @@ PythonProject/
 ## 已实现模块
 
 - **framework** — 五态状态机（OFF → PASSIVE → STANDBY → ACTIVE → OVERRIDE）+ 发布/订阅事件总线
-- **simulator** — 运动学自行车模型（后轴中心）、车道 3.2m 边界、车宽 1.96m、静态障碍、中心线路径
+- **simulator** — 运动学自行车模型（后轴中心）、三车道×3.2m、车宽 1.96m、静态/脚本动态障碍
 - **perception** — 激光雷达与摄像头模拟（距离/FOV 过滤、噪声、类别识别）及空间匹配融合
 - **hmi** — 订阅 `hmi_alert` 主题，分级告警管理
 - **control** — Pure Pursuit 路径跟踪 + 纵向速度 P 控制（已接入 `main.py`）
-- **planning** — 参考路径密化 + 基于障碍/终点的纵向 `target_speed`（已接入 `main.py`）
-- **visualize** — matplotlib 鸟瞰：车辆、航点/密化路径、预瞄点、障碍与融合检测、HUD（含估计轨迹）
+- **planning** — 路径密化 + 时距 ACC（跟车 / cut-in / cut-out）+ 终点减速
+- **visualize** — matplotlib 鸟瞰（车头向上、三车道）：车辆、路径、预瞄、障碍、ACC HUD
 - **localization** — 4 状态 EKF（里程计预测 + 含噪 GPS）；规划/控制吃估计位姿，感知吃真值
 - **prediction** — 融合检测最近邻跟踪 + 恒速短时预测，供 TrajPlanner 前瞻减速
 - **map** — Route/Link 路线下发与限速查询；`main` 下发演示路线，纵向规划吃 `speed_limit`
-- **sim_server / web** — WebSocket 实时鸟瞰 + 场景配置（路线/障碍 Apply & Restart）；CLI matplotlib 并行保留
+- **sim_server / web** — WebSocket 实时鸟瞰（车头向上、三车道）+ 场景配置；默认预设「跟车/Cut-in/Cut-out」
 
 ## 规划中模块
 

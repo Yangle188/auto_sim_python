@@ -1,13 +1,25 @@
 # tests/test_world_geometry.py
 import math
 
-from simulator.config import LANE_WIDTH, REAR_OVERHANG, VEHICLE_LENGTH, VEHICLE_WIDTH
-from simulator.geometry import ego_footprint_world, lane_boundaries, offset_polyline
+from simulator.config import (
+    LANE_WIDTH,
+    NUM_LANES,
+    REAR_OVERHANG,
+    VEHICLE_LENGTH,
+    VEHICLE_WIDTH,
+)
+from simulator.geometry import (
+    ego_footprint_world,
+    lane_boundaries,
+    multi_lane_boundaries,
+    offset_polyline,
+)
 from simulator.world import SimulationWorld
 
 
 def test_lane_and_vehicle_constants():
     assert LANE_WIDTH == 3.2
+    assert NUM_LANES == 3
     assert VEHICLE_WIDTH == 1.96
     assert VEHICLE_WIDTH < LANE_WIDTH
 
@@ -20,6 +32,18 @@ def test_lane_boundaries_width():
     assert abs(lane["left"][0][1] - half) < 1e-9
     assert abs(lane["right"][0][1] + half) < 1e-9
     assert abs(lane["left"][1][1] - half) < 1e-9
+
+
+def test_multi_lane_three_lanes():
+    center = [(0.0, 0.0), (20.0, 0.0)]
+    road = multi_lane_boundaries(center, LANE_WIDTH, 3)
+    assert road["num_lanes"] == 3
+    half_road = 1.5 * LANE_WIDTH
+    assert abs(road["left"][0][1] - half_road) < 1e-9
+    assert abs(road["right"][0][1] + half_road) < 1e-9
+    styles = {m["style"] for m in road["markings"]}
+    assert "solid" in styles and "dashed" in styles
+    assert len(road["lane_centers"]) == 3
 
 
 def test_offset_preserves_length_approx():
@@ -52,9 +76,13 @@ def test_world_lane_and_geom_api():
     world = SimulationWorld()
     world.set_reference_path([(0.0, 0.0), (40.0, 0.0)])
     assert world.lane_width == 3.2
+    assert world.num_lanes == 3
     lane = world.get_lane_boundaries()
     assert len(lane["left"]) == 2
+    assert lane["num_lanes"] == 3
+    assert lane["markings"]
     geom = world.get_vehicle_geom()
     assert geom["width"] == 1.96
+    assert geom["num_lanes"] == 3
     assert geom["ref_point"] == "rear_axle"
     assert world.vehicle.get_state()["ref_point"] == "rear_axle"

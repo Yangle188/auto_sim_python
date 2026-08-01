@@ -1,6 +1,8 @@
 # planning/traj_planner.py
 import math
-from typing import List, Optional, Sequence, Tuple, Any
+from typing import Any, List, Optional, Sequence, Tuple
+
+from simulator.config import LANE_WIDTH
 
 from .config import (
     CRUISE_SPEED,
@@ -9,13 +11,20 @@ from .config import (
     SLOW_DISTANCE,
     OBSTACLE_LATERAL_CLEARANCE,
     END_SLOW_DISTANCE,
+    TIME_GAP,
+    MIN_GAP,
+    FOLLOW_KP,
+    CUTIN_LOOKAHEAD_USE_PRED,
 )
 
 
 class TrajPlanner:
     """
-    纵向轨迹规划（教学简化版）：沿密化路径估计剩余弧长与前方障碍距离，
-    输出瞬时 target_speed，对接 PurePursuit.compute(..., target_speed=...).
+    纵向规划：地图限速为基准，叠加 ACC 跟车（含 cut-in/cut-out）。
+
+    - 本车道有前车 → 时距跟车：v = min(v_base, v_lead + kp*(d - d_des))
+    - 邻道目标预测轨切入本车道 → 提前按前车处理（cut-in 减速）
+    - 前车切出本车道 → 无 lead，回升到 v_base（cut-out 加速）
     """
 
     def __init__(
@@ -26,6 +35,10 @@ class TrajPlanner:
         slow_distance: float = SLOW_DISTANCE,
         lateral_clearance: float = OBSTACLE_LATERAL_CLEARANCE,
         end_slow_distance: float = END_SLOW_DISTANCE,
+        time_gap: float = TIME_GAP,
+        min_gap: float = MIN_GAP,
+        follow_kp: float = FOLLOW_KP,
+        cutin_use_pred: bool = CUTIN_LOOKAHEAD_USE_PRED,
     ):
         self.cruise_speed = cruise_speed
         self.min_speed = min_speed
@@ -33,6 +46,12 @@ class TrajPlanner:
         self.slow_distance = slow_distance
         self.lateral_clearance = lateral_clearance
         self.end_slow_distance = end_slow_distance
+        self.time_gap = time_gap
+        self.min_gap = min_gap
+        self.follow_kp = follow_kp
+        self.cutin_use_pred = cutin_use_pred
+        # 上一帧 lead 调试信息（供 HUD / 单测）
+        self.last_lead: Optional[dict] = None
 
     def plan(
         self,
@@ -41,33 +60,256 @@ class TrajPlanner:
         obstacles: Sequence[Any] = (),
         predictions: Sequence[Any] = (),
         speed_limit: Optional[float] = None,
+        leads: Sequence[Any] = (),
     ) -> float:
         """
-        :param predictions: PredictedObstacle 列表（可选）；用其 trajectory 点做前瞻挡路减速
+        :param predictions: PredictedObstacle 列表；提供 vx/vy 与 cut-in 前瞻
+        :param leads: 可选真值/融合前车 {x,y,vx,vy}，优先于 predictions（仿真 ACC 更稳）
         :param speed_limit: 地图限速基准（m/s）；None 时用 cruise_speed
         :return: 目标车速 m/s（非负）
         """
+        self.last_lead = None
         if len(path) < 2:
             return 0.0
 
-        x = vehicle_state["x"]
-        y = vehicle_state["y"]
+        x = float(vehicle_state["x"])
+        y = float(vehicle_state["y"])
+        v_ego = float(vehicle_state.get("speed", 0.0) or 0.0)
 
         closest_idx = self._closest_index(x, y, path)
         s_remain = self._remaining_arclength(path, closest_idx, x, y)
-        d_obs = self._nearest_front_obstacle_distance(
-            x, y, path, closest_idx, obstacles
-        )
-        d_pred = self._nearest_front_prediction_distance(
-            x, y, path, closest_idx, predictions
-        )
-        d_threat = min(d_obs, d_pred)
-
         v_base = self.cruise_speed if speed_limit is None else max(0.0, float(speed_limit))
-        v = v_base
-        v = min(v, self._speed_from_obstacle(d_threat, v_base))
+
+        lead = self._select_lead(
+            x, y, path, closest_idx, obstacles, predictions, leads=leads
+        )
+        if lead is not None:
+            d_gap, v_lead, source = lead
+            v_acc = self._acc_target_speed(v_ego, d_gap, v_lead, v_base)
+            self.last_lead = {
+                "d_gap": d_gap,
+                "v_lead": v_lead,
+                "source": source,
+                "v_acc": v_acc,
+            }
+            v = v_acc
+        else:
+            # 无前车：自由巡航到限速（cut-out 后加速）
+            v = v_base
+
         v = min(v, self._speed_from_remaining(s_remain, v_base))
         return max(0.0, v)
+
+    def _acc_target_speed(
+        self,
+        v_ego: float,
+        d_gap: float,
+        v_lead: float,
+        v_base: float,
+    ) -> float:
+        """时距 ACC：过近刹停；否则匹配前车速并按间距误差修正。"""
+        if d_gap <= self.stop_distance:
+            return 0.0
+
+        d_des = self.min_gap + self.time_gap * max(0.0, v_ego)
+        v_cmd = v_lead + self.follow_kp * (d_gap - d_des)
+
+        # 静态/极慢前车：叠加距离剖面，避免高速逼近静止物
+        if v_lead < 0.5 and d_gap < self.slow_distance:
+            v_cmd = min(v_cmd, self._speed_from_obstacle(d_gap, v_base))
+
+        return max(0.0, min(v_base, v_cmd))
+
+    def _select_lead(
+        self,
+        x: float,
+        y: float,
+        path: List[Tuple[float, float]],
+        closest_idx: int,
+        obstacles: Sequence[Any],
+        predictions: Sequence[Any],
+        leads: Sequence[Any] = (),
+    ) -> Optional[Tuple[float, float, str]]:
+        """
+        选最近本车道（或即将 cut-in）前车。
+        :return: (d_gap, v_lead, source) 或 None
+        """
+        best_d = float("inf")
+        best: Optional[Tuple[float, float, str]] = None
+
+        # 1) 显式 leads（仿真动态障碍真值速度）优先；
+        #    若调用方提供了 leads，则不再用嘈杂感知做 ACC 兜底（切出后保持无前车）
+        use_leads_only = bool(leads)
+        for lead in leads:
+            if isinstance(lead, dict):
+                ox = lead.get("x")
+                oy = lead.get("y")
+                vx = float(lead.get("vx", 0.0) or 0.0)
+                vy = float(lead.get("vy", 0.0) or 0.0)
+            else:
+                ox = getattr(lead, "x", None)
+                oy = getattr(lead, "y", None)
+                vx = float(getattr(lead, "vx", 0.0) or 0.0)
+                vy = float(getattr(lead, "vy", 0.0) or 0.0)
+            if ox is None or oy is None:
+                continue
+            threat = self._moving_object_threat(
+                x, y, path, closest_idx, float(ox), float(oy), vx, vy, traj=()
+            )
+            if threat is None:
+                continue
+            d_gap, v_lead, src = threat
+            tag = "lead" if src == "follow" else src
+            if d_gap < best_d:
+                best_d = d_gap
+                best = (d_gap, v_lead, tag)
+
+        if use_leads_only:
+            return best
+
+        # 2) 预测轨
+        for pred in predictions:
+            if getattr(pred, "coasting", False):
+                continue
+            threat = self._prediction_threat(x, y, path, closest_idx, pred)
+            if threat is None:
+                continue
+            d_gap, v_lead, src = threat
+            if d_gap < best_d:
+                best_d = d_gap
+                best = (d_gap, v_lead, src)
+
+        if best is not None:
+            return best
+
+        # 3) 静止/未知速度障碍兜底
+        for obs in obstacles:
+            ox = getattr(obs, "x", None)
+            oy = getattr(obs, "y", None)
+            if ox is None or oy is None:
+                continue
+            d_gap = self._in_lane_front_distance(
+                x, y, path, closest_idx, float(ox), float(oy)
+            )
+            if d_gap is None:
+                continue
+            if d_gap < best_d:
+                best_d = d_gap
+                best = (d_gap, 0.0, "obstacle")
+
+        return best
+
+    def _prediction_threat(
+        self,
+        x: float,
+        y: float,
+        path: List[Tuple[float, float]],
+        closest_idx: int,
+        pred: Any,
+    ) -> Optional[Tuple[float, float, str]]:
+        ox = float(getattr(pred, "x"))
+        oy = float(getattr(pred, "y"))
+        vx = float(getattr(pred, "vx", 0.0) or 0.0)
+        vy = float(getattr(pred, "vy", 0.0) or 0.0)
+        traj = getattr(pred, "trajectory", None) or ()
+        return self._moving_object_threat(
+            x, y, path, closest_idx, ox, oy, vx, vy, traj=traj
+        )
+
+    def _moving_object_threat(
+        self,
+        x: float,
+        y: float,
+        path: List[Tuple[float, float]],
+        closest_idx: int,
+        ox: float,
+        oy: float,
+        vx: float,
+        vy: float,
+        traj: Sequence[Any] = (),
+    ) -> Optional[Tuple[float, float, str]]:
+        d_now = self._in_lane_front_distance(x, y, path, closest_idx, ox, oy)
+        if d_now is not None:
+            v_lead = self._speed_along_path(path, ox, oy, vx, vy)
+            return d_now, max(0.0, v_lead), "follow"
+
+        if not self.cutin_use_pred:
+            return None
+
+        # cut-in：当前在邻道且正在靠近中心线
+        obs_idx = self._closest_index(ox, oy, path)
+        px, py = path[obs_idx]
+        lat = math.hypot(ox - px, oy - py)
+        if lat <= self.lateral_clearance:
+            return None
+        if lat > self.lateral_clearance + LANE_WIDTH:
+            return None
+        ox1, oy1 = ox + vx * 1.0, oy + vy * 1.0
+        idx1 = self._closest_index(ox1, oy1, path)
+        lat1 = math.hypot(ox1 - path[idx1][0], oy1 - path[idx1][1])
+        if lat1 >= lat - 0.15:
+            return None
+
+        best_d: Optional[float] = None
+        # 无 traj 时用 1~2s 外推点判定是否进入本车道
+        future_pts: List[Tuple[float, float]] = []
+        if traj and len(traj) >= 2:
+            for pt in traj[1:]:
+                if pt and len(pt) >= 2:
+                    future_pts.append((float(pt[0]), float(pt[1])))
+        else:
+            for k in (1.0, 1.5, 2.0):
+                future_pts.append((ox + vx * k, oy + vy * k))
+
+        for fx, fy in future_pts:
+            d = self._in_lane_front_distance(x, y, path, closest_idx, fx, fy)
+            if d is None:
+                continue
+            if best_d is None or d < best_d:
+                best_d = d
+        if best_d is None:
+            return None
+        v_lead = self._speed_along_path(path, ox, oy, vx, vy)
+        return best_d, max(0.0, v_lead), "cutin"
+
+    def _in_lane_front_distance(
+        self,
+        x: float,
+        y: float,
+        path: List[Tuple[float, float]],
+        closest_idx: int,
+        ox: float,
+        oy: float,
+    ) -> Optional[float]:
+        """目标在本车道且在前方时返回纵向间距，否则 None。"""
+        obs_idx = self._closest_index(ox, oy, path)
+        px, py = path[obs_idx]
+        lat = math.hypot(ox - px, oy - py)
+        if lat > self.lateral_clearance:
+            return None
+        if obs_idx < closest_idx:
+            return None
+        return self._path_arclength_between(path, closest_idx, obs_idx, x, y)
+
+    def _speed_along_path(
+        self,
+        path: List[Tuple[float, float]],
+        ox: float,
+        oy: float,
+        vx: float,
+        vy: float,
+    ) -> float:
+        """把速度投影到路径切向（前向为正）。"""
+        idx = self._closest_index(ox, oy, path)
+        if idx >= len(path) - 1:
+            idx = max(0, len(path) - 2)
+        dx = path[idx + 1][0] - path[idx][0]
+        dy = path[idx + 1][1] - path[idx][1]
+        L = math.hypot(dx, dy)
+        if L < 1e-9:
+            return math.hypot(vx, vy)
+        tx, ty = dx / L, dy / L
+        return vx * tx + vy * ty
 
     def _closest_index(
         self,
@@ -92,7 +334,6 @@ class TrajPlanner:
             if len(path) >= 2:
                 x0, y0 = path[-2]
                 x1, y1 = path[-1]
-                # (车 - 终点) · (终点 - 前一点) > 0 表示已驶过终点
                 if (x - x1) * (x1 - x0) + (y - y1) * (y1 - y0) > 0:
                     return 0.0
             return math.hypot(path[-1][0] - x, path[-1][1] - y)
@@ -122,93 +363,13 @@ class TrajPlanner:
             s += math.hypot(x1 - x0, y1 - y0)
         return s
 
-    def _nearest_front_obstacle_distance(
-        self,
-        x: float,
-        y: float,
-        path: List[Tuple[float, float]],
-        closest_idx: int,
-        obstacles: Sequence[Any],
-    ) -> float:
-        """
-        返回路径前方最近「挡路」障碍的纵向距离；
-        无障碍时返回 +inf。
-        """
-        if not obstacles:
-            return float("inf")
-
-        best = float("inf")
-        for obs in obstacles:
-            ox = getattr(obs, "x", None)
-            oy = getattr(obs, "y", None)
-            if ox is None or oy is None:
-                continue
-
-            obs_idx = self._closest_index(ox, oy, path)
-            px, py = path[obs_idx]
-            lat = math.hypot(ox - px, oy - py)
-            if lat > self.lateral_clearance:
-                continue
-            if obs_idx < closest_idx:
-                continue
-
-            d_lon = self._path_arclength_between(path, closest_idx, obs_idx, x, y)
-            if d_lon < best:
-                best = d_lon
-
-        return best
-
-    def _nearest_front_prediction_distance(
-        self,
-        x: float,
-        y: float,
-        path: List[Tuple[float, float]],
-        closest_idx: int,
-        predictions: Sequence[Any],
-    ) -> float:
-        """
-        扫描预测轨迹点，返回前方最近挡路点的纵向距离；无则 +inf。
-        """
-        if not predictions:
-            return float("inf")
-
-        best = float("inf")
-        for pred in predictions:
-            # 忽略 coasting / 仅当前位置的静止轨（无外推）
-            if getattr(pred, "coasting", False):
-                continue
-            traj = getattr(pred, "trajectory", None) or ()
-            if len(traj) < 2:
-                continue
-            # 当前位置已由 obstacles 覆盖；只看未来外推点做前瞻
-            for pt in traj[1:]:
-                if not pt or len(pt) < 2:
-                    continue
-                ox, oy = float(pt[0]), float(pt[1])
-                obs_idx = self._closest_index(ox, oy, path)
-                px, py = path[obs_idx]
-                lat = math.hypot(ox - px, oy - py)
-                if lat > self.lateral_clearance:
-                    continue
-                if obs_idx < closest_idx:
-                    continue
-                d_lon = self._path_arclength_between(path, closest_idx, obs_idx, x, y)
-                if d_lon < best:
-                    best = d_lon
-        return best
-
     def _speed_from_obstacle(self, d_obs: float, v_base: float) -> float:
-        """
-        d >= SLOW → v_base；
-        d <= STOP → 0；
-        其间从 MIN_SPEED 线性升到 v_base。
-        """
+        """静态障碍距离剖面：d>=SLOW→v_base；d<=STOP→0；其间线性。"""
         if d_obs >= self.slow_distance:
             return v_base
         if d_obs <= self.stop_distance:
             return 0.0
         ratio = (d_obs - self.stop_distance) / (self.slow_distance - self.stop_distance)
-        # min_speed 不超过基准速，避免限速很低时插值反常
         v_lo = min(self.min_speed, v_base)
         return v_lo + ratio * (v_base - v_lo)
 

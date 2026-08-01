@@ -20,6 +20,10 @@ from .config import (
     REAR_OVERHANG,
     HOLD_ON_FINISH,
     PAUSE_POLL_SEC,
+    HEADING_UP,
+    VIEW_AHEAD,
+    VIEW_BEHIND,
+    VIEW_SIDE,
 )
 
 _SOURCE_COLOR = {
@@ -100,10 +104,11 @@ class Renderer:
         self._holding = False
         self._replay_requested = False
         self._bounds_init = False
-        self._xlim = (-10.0, 110.0)
-        self._ylim = (-15.0, 15.0)
+        self._xlim = (-VIEW_SIDE, VIEW_SIDE)
+        self._ylim = (-VIEW_BEHIND, VIEW_AHEAD)
+        self._heading_up = HEADING_UP
         self._base_title = (
-            "AutoSim  |  Space=pause  Replay/r=replay  q=quit"
+            "AutoSim  |  heading-up  |  Space=pause  Replay/r=replay  q=quit"
         )
 
         self._trail: Deque[Tuple[float, float]] = deque(maxlen=trail_length)
@@ -111,7 +116,9 @@ class Renderer:
         self._obstacle_patches: List[Any] = []
         self._fused_scatters: List[Any] = []
         self._pred_lines: List[Any] = []
+        self._lane_mark_lines: List[Any] = []
         self._btn_replay = None
+        self._ego_pose = (0.0, 0.0, 0.0)
 
         # 交互后端才开 ion；Agg 等无头后端避免 pause 挂起
         self._interactive = self._plt.get_backend().lower() != "agg"
@@ -120,8 +127,8 @@ class Renderer:
         self.fig, self.ax = self._plt.subplots(figsize=fig_size)
         self.ax.set_aspect("equal", adjustable="box")
         self.ax.grid(True, linestyle="--", alpha=0.35)
-        self.ax.set_xlabel("x (m)")
-        self.ax.set_ylabel("y (m)")
+        self.ax.set_xlabel("left (m)" if HEADING_UP else "x (m)")
+        self.ax.set_ylabel("forward (m)" if HEADING_UP else "y (m)")
         self.ax.set_title(self._base_title)
         self.fig.subplots_adjust(bottom=0.14, right=0.98)
         if self._interactive:
@@ -137,10 +144,10 @@ class Renderer:
         )
         self._route_link_lines: List[Any] = []
         (self._line_lane_left,) = self.ax.plot(
-            [], [], "-", color="#94a3b8", linewidth=1.0, alpha=0.7, label="lane L"
+            [], [], "-", color="#94a3b8", linewidth=1.2, alpha=0.85, label="road edge"
         )
         (self._line_lane_right,) = self.ax.plot(
-            [], [], "-", color="#94a3b8", linewidth=1.0, alpha=0.7, label="lane R"
+            [], [], "-", color="#94a3b8", linewidth=1.2, alpha=0.85
         )
         (self._line_path,) = self.ax.plot(
             [], [], "-", color="#1f77b4", linewidth=1.2, alpha=0.85, label="dense path"
@@ -204,6 +211,7 @@ class Renderer:
         y = float(vehicle.get("y", 0.0))
         yaw = float(vehicle.get("yaw", 0.0))
         speed = float(vehicle.get("speed", 0.0))
+        self._ego_pose = (x, y, yaw)
 
         waypoints = list(snapshot.get("waypoints") or [])
         path = list(snapshot.get("path") or [])
@@ -217,33 +225,21 @@ class Renderer:
             self._line_waypoints.set_data([], [])
         elif waypoints:
             self._clear_route_link_lines()
-            wx, wy = zip(*waypoints)
-            self._line_waypoints.set_data(wx, wy)
+            self._line_waypoints.set_data(*self._xy_series(waypoints))
         else:
             self._clear_route_link_lines()
             self._line_waypoints.set_data([], [])
 
         if path:
-            px, py = zip(*path)
-            self._line_path.set_data(px, py)
+            self._line_path.set_data(*self._xy_series(path))
         else:
             self._line_path.set_data([], [])
 
-        lane_left = list(snapshot.get("lane_left") or [])
-        lane_right = list(snapshot.get("lane_right") or [])
-        if lane_left:
-            self._line_lane_left.set_data(*zip(*lane_left))
-        else:
-            self._line_lane_left.set_data([], [])
-        if lane_right:
-            self._line_lane_right.set_data(*zip(*lane_right))
-        else:
-            self._line_lane_right.set_data([], [])
+        self._redraw_lane_markings(snapshot)
 
         self._trail.append((x, y))
         if self._trail:
-            tx, ty = zip(*self._trail)
-            self._line_trail.set_data(tx, ty)
+            self._line_trail.set_data(*self._xy_series(list(self._trail)))
 
         vehicle_est = snapshot.get("vehicle_est")
         err_xy = None
@@ -253,17 +249,18 @@ class Renderer:
             eyaw = float(vehicle_est.get("yaw", 0.0))
             self._trail_est.append((ex, ey))
             if self._trail_est:
-                etx, ety = zip(*self._trail_est)
-                self._line_trail_est.set_data(etx, ety)
+                self._line_trail_est.set_data(*self._xy_series(list(self._trail_est)))
             geom = snapshot.get("vehicle_geom") or {}
             self._ego_est_poly.set_xy(
-                self._ego_footprint(
-                    ex,
-                    ey,
-                    eyaw,
-                    length=float(geom.get("length", VEHICLE_LENGTH)),
-                    width=float(geom.get("width", VEHICLE_WIDTH)),
-                    rear_overhang=float(geom.get("rear_overhang", REAR_OVERHANG)),
+                self._map_poly(
+                    self._ego_footprint(
+                        ex,
+                        ey,
+                        eyaw,
+                        length=float(geom.get("length", VEHICLE_LENGTH)),
+                        width=float(geom.get("width", VEHICLE_WIDTH)),
+                        rear_overhang=float(geom.get("rear_overhang", REAR_OVERHANG)),
+                    )
                 )
             )
             self._ego_est_poly.set_visible(True)
@@ -273,26 +270,34 @@ class Renderer:
             self._ego_est_poly.set_visible(False)
 
         if lookahead is not None:
-            self._pt_lookahead.set_data([lookahead[0]], [lookahead[1]])
+            lx, ly = self._to_view(float(lookahead[0]), float(lookahead[1]))
+            self._pt_lookahead.set_data([lx], [ly])
         else:
             self._pt_lookahead.set_data([], [])
 
         geom = snapshot.get("vehicle_geom") or {}
         self._ego_poly.set_xy(
-            self._ego_footprint(
-                x,
-                y,
-                yaw,
-                length=float(geom.get("length", VEHICLE_LENGTH)),
-                width=float(geom.get("width", VEHICLE_WIDTH)),
-                rear_overhang=float(geom.get("rear_overhang", REAR_OVERHANG)),
+            self._map_poly(
+                self._ego_footprint(
+                    x,
+                    y,
+                    yaw,
+                    length=float(geom.get("length", VEHICLE_LENGTH)),
+                    width=float(geom.get("width", VEHICLE_WIDTH)),
+                    rear_overhang=float(geom.get("rear_overhang", REAR_OVERHANG)),
+                )
             )
         )
-        self._pt_rear_axle.set_data([x], [y])
+        rx, ry = self._to_view(x, y)
+        self._pt_rear_axle.set_data([rx], [ry])
         self._redraw_obstacles(obstacles)
         self._redraw_fused(fused)
         self._redraw_predictions(list(snapshot.get("predictions") or []))
-        self._update_bounds(waypoints, path, obstacles, x, y)
+        if self._heading_up:
+            self._xlim = (-VIEW_SIDE, VIEW_SIDE)
+            self._ylim = (-VIEW_BEHIND, VIEW_AHEAD)
+        else:
+            self._update_bounds(waypoints, path, obstacles, x, y)
 
         t = float(snapshot.get("t", 0.0))
         state = snapshot.get("state", "?")
@@ -305,11 +310,22 @@ class Renderer:
             limit_str = f"{float(speed_limit):5.2f}"
         err_line = f"  loc_err={err_xy:5.2f}m" if err_xy is not None else ""
         pause_tag = "  [PAUSED]" if self._paused else ""
+        acc = snapshot.get("acc")
+        if isinstance(acc, dict):
+            acc_line = (
+                f"\nACC d={float(acc.get('d_gap', 0)):5.1f}m  "
+                f"v_lead={float(acc.get('v_lead', 0)):4.1f}  "
+                f"{acc.get('source', '')}"
+            )
+        else:
+            acc_line = "\nACC: cruise (no lead)"
+        num_lanes = snapshot.get("num_lanes", geom.get("num_lanes", 1))
         self._hud.set_text(
             f"t={t:5.2f}s  state={state}{pause_tag}\n"
             f"speed={speed:5.2f} m/s  v_cmd={v_cmd:5.2f}  limit={limit_str}\n"
             f"steer={math.degrees(steer):6.2f} deg  pos=({x:6.2f},{y:5.2f})"
-            f"{err_line}"
+            f"{err_line}  lanes={num_lanes}"
+            f"{acc_line}"
         )
         self._refresh_title()
 
@@ -345,6 +361,7 @@ class Renderer:
         self._clear_patches(self._obstacle_patches)
         self._clear_patches(self._fused_scatters)
         self._clear_patches(self._pred_lines)
+        self._clear_patches(self._lane_mark_lines)
         self._clear_route_link_lines()
         self._refresh_title()
         if self._interactive and not self._closed:
@@ -466,8 +483,33 @@ class Renderer:
         width: float = VEHICLE_WIDTH,
         rear_overhang: float = REAR_OVERHANG,
     ) -> List[Tuple[float, float]]:
-        """后轴中心 (x,y) 为参考点的车体矩形。"""
+        """后轴中心 (x,y) 为参考点的车体矩形（世界系）。"""
         return ego_footprint_world(x, y, yaw, length, width, rear_overhang)
+
+    def _to_view(self, wx: float, wy: float) -> Tuple[float, float]:
+        """世界坐标 → 绘图坐标（车头向上时：x=左，y=前）。"""
+        if not self._heading_up:
+            return wx, wy
+        ex, ey, yaw = self._ego_pose
+        dx, dy = wx - ex, wy - ey
+        c, s = math.cos(yaw), math.sin(yaw)
+        fwd = c * dx + s * dy
+        left = -s * dx + c * dy
+        return left, fwd
+
+    def _xy_series(
+        self, pts: Sequence[Tuple[float, float]]
+    ) -> Tuple[Tuple[float, ...], Tuple[float, ...]]:
+        if not pts:
+            return (), ()
+        mapped = [self._to_view(float(p[0]), float(p[1])) for p in pts]
+        xs, ys = zip(*mapped)
+        return xs, ys
+
+    def _map_poly(
+        self, pts: Sequence[Tuple[float, float]]
+    ) -> List[Tuple[float, float]]:
+        return [self._to_view(float(p[0]), float(p[1])) for p in pts]
 
     def _clear_patches(self, patches: List[Any]) -> None:
         for p in patches:
@@ -476,6 +518,40 @@ class Renderer:
             except Exception:
                 pass
         patches.clear()
+
+    def _redraw_lane_markings(self, snapshot: Dict[str, Any]) -> None:
+        self._clear_patches(self._lane_mark_lines)
+        markings = list(snapshot.get("lane_markings") or [])
+        if markings:
+            self._line_lane_left.set_data([], [])
+            self._line_lane_right.set_data([], [])
+            for m in markings:
+                pts = list(m.get("points") or [])
+                if len(pts) < 2:
+                    continue
+                style = m.get("style", "solid")
+                dashed = style == "dashed"
+                (ln,) = self.ax.plot(
+                    *self._xy_series(pts),
+                    linestyle="--" if dashed else "-",
+                    color="#e2e8f0" if dashed else "#94a3b8",
+                    linewidth=1.0 if dashed else 1.4,
+                    alpha=0.7 if dashed else 0.9,
+                    zorder=1,
+                )
+                self._lane_mark_lines.append(ln)
+            return
+
+        lane_left = list(snapshot.get("lane_left") or [])
+        lane_right = list(snapshot.get("lane_right") or [])
+        if lane_left:
+            self._line_lane_left.set_data(*self._xy_series(lane_left))
+        else:
+            self._line_lane_left.set_data([], [])
+        if lane_right:
+            self._line_lane_right.set_data(*self._xy_series(lane_right))
+        else:
+            self._line_lane_right.set_data([], [])
 
     def _redraw_obstacles(self, obstacles: Sequence[Any]) -> None:
         self._clear_patches(self._obstacle_patches)
@@ -487,18 +563,23 @@ class Renderer:
             if ox is None or oy is None or w is None or h is None:
                 continue
             ox, oy, w, h = float(ox), float(oy), float(w), float(h)
-            rect = self._Rectangle(
+            corners = [
                 (ox - 0.5 * w, oy - 0.5 * h),
-                w,
-                h,
+                (ox + 0.5 * w, oy - 0.5 * h),
+                (ox + 0.5 * w, oy + 0.5 * h),
+                (ox - 0.5 * w, oy + 0.5 * h),
+            ]
+            poly = self._Polygon(
+                self._map_poly(corners),
+                closed=True,
                 linewidth=1.0,
                 edgecolor="#8c564b",
                 facecolor="#c49c94",
                 alpha=0.55,
                 zorder=3,
             )
-            self.ax.add_patch(rect)
-            self._obstacle_patches.append(rect)
+            self.ax.add_patch(poly)
+            self._obstacle_patches.append(poly)
 
     def _redraw_fused(self, fused: Sequence[Any]) -> None:
         self._clear_patches(self._fused_scatters)
@@ -509,9 +590,10 @@ class Renderer:
                 continue
             source = _snap_get(obs, "source", "unknown")
             color = _SOURCE_COLOR.get(source, "#9467bd")
+            vx, vy = self._to_view(float(ox), float(oy))
             (sc,) = self.ax.plot(
-                [float(ox)],
-                [float(oy)],
+                [vx],
+                [vy],
                 "o",
                 markersize=9,
                 markerfacecolor="none",
@@ -527,11 +609,8 @@ class Renderer:
             traj = _snap_get(pred, "trajectory") or ()
             if len(traj) < 2:
                 continue
-            xs = [float(p[0]) for p in traj]
-            ys = [float(p[1]) for p in traj]
             (ln,) = self.ax.plot(
-                xs,
-                ys,
+                *self._xy_series([(float(p[0]), float(p[1])) for p in traj]),
                 "--",
                 color="#9467bd",
                 linewidth=1.4,
@@ -571,14 +650,11 @@ class Renderer:
             pts = list(link.get("points") or [])
             if len(pts) < 2:
                 continue
-            xs = [float(p[0]) for p in pts]
-            ys = [float(p[1]) for p in pts]
             v = float(link.get("speed_limit", 0.0))
             color = self._color_for_speed_limit(v, v_min, v_max)
             label = "route links" if i == 0 else None
             (ln,) = self.ax.plot(
-                xs,
-                ys,
+                *self._xy_series([(float(p[0]), float(p[1])) for p in pts]),
                 "s-",
                 color=color,
                 markersize=4,

@@ -6,12 +6,13 @@ from typing import List, Sequence, Tuple
 from .config import (
     FRONT_OVERHANG,
     LANE_WIDTH,
+    NUM_LANES,
     REAR_OVERHANG,
     VEHICLE_LENGTH,
     VEHICLE_WIDTH,
     WHEEL_BASE,
 )
-from .geometry import lane_boundaries
+from .geometry import multi_lane_boundaries
 from .vehicle import Vehicle
 
 
@@ -32,6 +33,7 @@ class SimulationWorld:
         # 参考路径 = 车道中心线；自车后轴中心应沿此线行驶
         self.reference_path: List[Tuple[float, float]] = []
         self.lane_width = LANE_WIDTH
+        self.num_lanes = NUM_LANES
 
     def reset(self) -> None:
         """重置仿真世界：车辆归位，保留障碍物与路径配置"""
@@ -48,9 +50,9 @@ class SimulationWorld:
         self.reference_path = [(float(p[0]), float(p[1])) for p in path]
 
     def get_lane_boundaries(self, path: Sequence[Tuple[float, float]] | None = None) -> dict:
-        """中心线 + 左右边界（宽度 LANE_WIDTH）。"""
+        """多车道标线（默认 3 车道；自车居中）。"""
         center = path if path is not None else self.reference_path
-        return lane_boundaries(center, self.lane_width)
+        return multi_lane_boundaries(center, self.lane_width, self.num_lanes)
 
     def get_vehicle_geom(self) -> dict:
         """自车外形与参考点说明（后轴中心）。"""
@@ -62,6 +64,7 @@ class SimulationWorld:
             "front_overhang": FRONT_OVERHANG,
             "ref_point": "rear_axle",
             "lane_width": self.lane_width,
+            "num_lanes": self.num_lanes,
         }
 
     def step(self, acceleration: float, steer_angle: float) -> None:
