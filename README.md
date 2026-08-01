@@ -12,7 +12,10 @@ PythonProject/
 ├── simulator/              # 物理仿真（自行车模型、障碍物、参考路径）
 ├── perception/             # 感知（激光雷达 / 摄像头模拟 + 融合）
 ├── hmi/                    # 人机交互告警管理
+├── control/                # Pure Pursuit 横向跟踪 + 纵向速度 P 控制
 ├── tests/                  # 单元测试
+├── docs/                   # 开发总结等文档
+├── HANDOFF.md              # 交接文档（继续开发请先读）
 ├── project_scaffold.py     # 项目脚手架生成脚本
 └── scaffold_config.json    # 完整 AD 栈目录规划
 ```
@@ -28,6 +31,7 @@ PythonProject/
 | `simulator/config.py` | 车辆动力学参数（轴距、最大车速、加减速度、转角） |
 | `perception/config.py` | 激光雷达 / 摄像头检测范围、FOV、噪声、检测概率 |
 | `hmi/config.py` | 告警列表容量等 HMI 参数 |
+| `control/config.py` | 预瞄距离、巡航速、纵向 Kp、STANDBY 加速度 |
 
 > 根目录遗留的 `config.py` 已移除；Python 统一从 `config/` 包导入全局配置。
 
@@ -37,10 +41,16 @@ PythonProject/
 - **simulator** — 运动学自行车模型、静态障碍物、参考路径
 - **perception** — 激光雷达与摄像头模拟（距离/FOV 过滤、噪声、类别识别）及空间匹配融合
 - **hmi** — 订阅 `hmi_alert` 主题，分级告警管理
+- **control** — Pure Pursuit 路径跟踪 + 纵向速度 P 控制（已接入 `main.py`）
 
 ## 规划中模块
 
-`scaffold_config.json` 中已规划但尚未实现：localization、prediction、planning、control、visualize。
+`scaffold_config.json` 中已规划但尚未实现：localization、prediction、planning、visualize。
+
+## 文档
+
+- [HANDOFF.md](HANDOFF.md) — 交接与继续开发指引
+- [docs/SUMMARY_2026-07-31_control.md](docs/SUMMARY_2026-07-31_control.md) — control 模块开发总结与算法原理
 
 运行脚手架可创建空目录占位：
 
@@ -83,7 +93,7 @@ PYTHONPATH=. python tests/test_state_machine.py
 1. t=0.5s 上电（OFF → PASSIVE）
 2. t=2.5s 自检通过（PASSIVE → STANDBY）
 3. STANDBY 阶段加速，车速 ≥ 5 m/s 时激活 AD（STANDBY → ACTIVE）
-4. ACTIVE 阶段以 10 m/s 为目标速度巡航
+4. ACTIVE 阶段 Pure Pursuit 跟踪参考路径，并以约 10 m/s 为目标速度巡航
 5. 每帧更新感知链路并发布 `perception_update` 事件
 
 ## 状态机激活条件
