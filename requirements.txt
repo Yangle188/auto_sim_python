@@ -1,4 +1,7 @@
-# 运行时无第三方依赖，仅需 Python 3.10+
+# 核心仿真无第三方依赖，仅需 Python 3.10+
+# visualize 鸟瞰渲染需要 matplotlib
+
+matplotlib>=3.8
 
 # 开发与测试
 pytest>=8.0

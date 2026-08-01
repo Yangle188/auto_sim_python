@@ -1,14 +1,14 @@
 # AutoSim 交接文档（HANDOFF）
 
 > 目的：让后续会话（人或 Agent）不依赖聊天上下文，即可从当前状态继续开发。  
-> 最后更新：2026-07-31  
+> 最后更新：2026-08-01  
 > 项目路径：`/Users/ricka/PycharmProjects/PythonProject`
 
 ---
 
 ## 1. 一句话现状
 
-模块化自动驾驶仿真原型（AutoSim）：状态机 + 事件总线 + 自行车模型 + 激光/视觉感知融合 + HMI + **Pure Pursuit 控制闭环** 已接通；`pytest` 全绿。下一优先可做 **planning**、**visualize** 或 **localization**。
+模块化自动驾驶仿真原型（AutoSim）主链路已齐：状态机、仿真、感知、HMI、控制、规划、可视化、定位、**预测（CV）**；`pytest` 全绿。后续以打磨与扩展为主。
 
 ---
 
@@ -16,14 +16,15 @@
 
 ```bash
 cd /Users/ricka/PycharmProjects/PythonProject
-source .venv/bin/activate   # Python 3.14 已验证；需 3.10+
-pip install -r requirements.txt   # 仅 pytest
-pytest                          # 预期全部通过（2026-07-31：39 passed）
-python main.py                  # 20s 仿真，含跟路径控制
+source .venv/bin/activate
+pip install -r requirements.txt   # pytest + matplotlib
+pytest
+python main.py                    # 20s；鸟瞰可关
 ```
 
-- 运行时无第三方依赖；测试依赖 pytest。
-- Git：分支 `main`，近期提交含 `add control module`。
+- 核心仿真 / EKF / 预测无第三方数值库；visualize 需 matplotlib。
+- `visualize/config.py`：`ENABLE_VISUALIZE = False` 可关窗；`HOLD_ON_FINISH` 控制结束后是否保持窗口。
+- 鸟瞰：`Space` 暂停；`Replay`/`r` 重播；结束后关窗或 `q` 退出。变更见 `CHANGELOG.md`。
 
 ---
 
@@ -31,96 +32,54 @@ python main.py                  # 20s 仿真，含跟路径控制
 
 | 模块 | 状态 | 关键文件 |
 |------|------|----------|
-| `config/` | ✅ | `base_config.py`（DT、状态枚举、HMI 等级） |
-| `framework/` | ✅ | `state_machine.py`、`event_bus.py`、`config.py` |
-| `simulator/` | ✅ | `vehicle.py`（自行车模型）、`world.py`（障碍物+参考路径） |
-| `perception/` | ✅ | lidar/camera sim + `perception_fusion.py` |
-| `hmi/` | ✅ | `hmi_manager.py` |
-| **`control/`** | ✅ **今日完成** | `config.py`、`pure_pursuit.py`；测试 `tests/test_control.py` |
-| `localization/` | ❌ 空占位 | `ekf_localizer.py` |
-| `prediction/` | ❌ 空占位 | `predictor.py` |
-| `planning/` | ❌ 空占位 | `path_planner.py`、`traj_planner.py` |
-| `visualize/` | ❌ 空占位 | `renderer.py` |
+| `config/` … `visualize/` | ✅ | 见既有 SUMMARY |
+| `localization/` | ✅ | EKF + GPS |
+| **`prediction/`** | ✅ **今日完成** | `predictor.py`；`tests/test_prediction.py` |
 
-脚手架清单：`scaffold_config.json`（`skip_exist_file: true`）。空文件不要随便覆盖已有实现。
+脚手架：`scaffold_config.json`（`skip_exist_file: true`）。
 
 ---
 
-## 4. 架构与主循环约定
-
-数据流（当前实际接线）：
+## 4. 主循环数据流
 
 ```
-状态机 ──► 是否输出控制
-world.reference_path + vehicle_state ──► PurePursuit.compute ──► (acc, steer)
-                                                              ──► world.step
-true_obstacles + ego ──► lidar/camera ──► fusion ──► event_bus("perception_update")
-state_change / hmi_alert ──► HMIManager
+动态障碍真值更新
+true → 感知融合 → predictor.step → predictions
+est (EKF) → PathPlanner / TrajPlanner(predictions) / PurePursuit
+→ world.step → EKF.predict + GPS → Renderer(true, est, predictions)
 ```
-
-`main.py` 控制策略：
-
-- **STANDBY**：横向用 `PurePursuit`；纵向固定 `STANDBY_ACC`（起步）。
-- **ACTIVE**：`acc, steer = controller.compute(vehicle_state, world.reference_path)`。
-- 其它状态：`acc=0, steer=0`。
-
-时序事件：t≈0.5s 上电，t≈2.5s 自检；用 `sim_time + DT*0.5` 判断，避免浮点晚一拍。
-
-配置分层（勿重复定义车辆物理上限）：
-
-- 全局：`config/base_config.py`
-- 状态机阈值：`framework/config.py`
-- 车辆约束：`simulator/config.py`（轴距、转角/加减速度上限）
-- 控制旋钮：`control/config.py`（预瞄距离、巡航速、Kp、STANDBY_ACC）
-
-代码风格：模块内 `config.py` + 类；类型提示；控制/传感器输出限幅；测试风格对齐 `tests/test_vehicle.py`（可 `pytest` 也可 `__main__` 跑）。
 
 ---
 
-## 5. Control 接口（已冻结，后续模块应对接）
+## 5. Prediction 接口
 
 ```python
-from control.pure_pursuit import PurePursuit
+from prediction.predictor import ObstaclePredictor
 
-ctrl = PurePursuit()  # 可选覆盖 lookahead / target_speed / speed_kp / wheel_base
-acc, steer = ctrl.compute(
-    vehicle_state,          # dict: x, y, yaw, speed
-    path,                   # List[Tuple[x,y]]，现为 world.reference_path
-    target_speed=None,      # None → 用 ctrl.target_speed；留给 planning 动态调速
-)
-# 输出已按 MAX_ACC / MAX_DECEL / MAX_STEER_ANGLE 限幅
+predictions = ObstaclePredictor().step(fused_obstacles, dt=DT)
+v_cmd = TrajPlanner().plan(est, path, fused, predictions)
 ```
 
-预瞄点算法要点（踩过坑）：**不能**简单取「全局第一个距离 ≥ Ld 的点」，否则驶离起点后会选中身后点。正确做法：先找最近路点索引，再从 `closest_idx+1` 向前找。详见 `docs/SUMMARY_2026-07-31_control.md`。
-
-已知局限（有意留到后续）：
-
-- 路径点稀疏（main 里仅 3 点）；无折线插值、无随速变 Ld。
-- 纵向仅为 P 控制；动态调速接口已留，策略未做。
-- 无障碍物避障/跟车（需 planning + prediction）。
+场景：静态旁侧障碍 + 动态障碍 \(x=60,\;y=-8+1.5t\)。
 
 ---
 
-## 6. 建议的下一任务（按优先级任选）
+## 6. 建议的下一任务
 
-1. **planning**：用规划输出替换手写 `set_reference_path`；向 `compute(..., target_speed=...)` 喂速度曲线。
-2. **visualize**：渲染车辆、路径、预瞄点、障碍物（便于调 Ld / 路径）。
-3. **localization**：EKF，主循环用估计位姿喂控制（现为真值）。
-4. **prediction**：动态障碍轨迹，供规划减速。
-5. **打磨 control**：路径段插值预瞄、\(L_d(v)\)、STANDBY/ACTIVE 策略细化。
-6. **文档同步**：更新根目录 `README.md`（仍写着 control 未实现）；`scaffold_config.json` 可补上 `tests/test_control.py`。
-
-教学式开发偏好（若用户再次要求）：先原理 → 再骨架 → 再实现 → 再接线/测试；用户也可能直接说「直接实现」。
+1. 打磨 planning：几何绕障、曲率调速  
+2. 打磨 control：\(L_d(v)\)、段上插值预瞄  
+3. 打磨 localization：IMU 观测、与车辆积分对齐  
+4. 打磨 visualize：录帧 / GIF  
+5. 打磨 prediction：多模态 / 简单交互  
 
 ---
 
-## 7. 回归检查清单（改完必跑）
+## 7. 回归检查清单
 
 - [ ] `pytest`
-- [ ] `python main.py` 能完整跑完；ACTIVE 后车应沿参考路径前进，末端附近 y 向 `(100,2)` 靠拢
-- [ ] 不在 `control` 里复制 `WHEEL_BASE` / 限幅常量
-- [ ] 融合层勿原地改写传感器结果的 `source`（历史 bug）
-- [ ] 状态机自检失败/超时须拦住进 STANDBY（历史 bug）
+- [ ] `python main.py` 完整跑完；ACTIVE 后沿路径前进，末端附近靠拢 `(100,2)`
+- [ ] 感知用真值、控制用估计
+- [ ] `ENABLE_VISUALIZE=False` 时 main 仍可跑通
 
 ---
 
@@ -128,12 +87,15 @@ acc, steer = ctrl.compute(
 
 | 文档 | 内容 |
 |------|------|
-| `docs/SUMMARY_2026-07-31_control.md` | 今日 control 开发总结、计算原理、算法实现 |
-| `README.md` | 入门说明（部分「规划中模块」表述可能滞后，以本文为准） |
-| `scaffold_config.json` | 目标目录树 |
+| `docs/SUMMARY_2026-08-01_prediction.md` | CV 预测 |
+| `docs/SUMMARY_2026-08-01_localization.md` | EKF |
+| `docs/SUMMARY_2026-08-01_visualize.md` | 鸟瞰 |
+| `docs/SUMMARY_2026-08-01_planning.md` | planning |
+| `docs/SUMMARY_2026-07-31_control.md` | Pure Pursuit |
+| `README.md` | 入门 |
 
 ---
 
 ## 9. 给后续 Agent 的最短指令
 
-> 阅读 `HANDOFF.md` 与 `docs/SUMMARY_2026-07-31_control.md`。在 `PythonProject` 下继续未实现模块（优先 planning 或 visualize）。保持现有 `PurePursuit.compute` 接口；动态速度经 `target_speed` 传入。改完跑 `pytest` 与 `python main.py`。
+> 阅读 `HANDOFF.md`。主模块已齐，优先按第 6 节打磨。保持真值→感知、估计→控制、`predictions`→TrajPlanner。改完跑 `pytest` 与 `python main.py`。

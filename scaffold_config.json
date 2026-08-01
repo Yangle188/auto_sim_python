@@ -43,6 +43,11 @@
     "tests/test_perception.py",
     "tests/test_event_bus.py",
     "tests/test_world.py",
-    "tests/test_hmi.py"
+    "tests/test_hmi.py",
+    "tests/test_control.py",
+    "tests/test_planning.py",
+    "tests/test_visualize.py",
+    "tests/test_localization.py",
+    "tests/test_prediction.py"
   ]
 }

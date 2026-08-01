@@ -13,6 +13,10 @@ PythonProject/
 ├── perception/             # 感知（激光雷达 / 摄像头模拟 + 融合）
 ├── hmi/                    # 人机交互告警管理
 ├── control/                # Pure Pursuit 横向跟踪 + 纵向速度 P 控制
+├── planning/               # 路径密化 + 纵向目标车速规划
+├── visualize/              # matplotlib 鸟瞰渲染（车辆/路径/预瞄/障碍）
+├── localization/           # 自行车模型 EKF 定位（GPS + 里程计）
+├── prediction/             # 恒速障碍预测（跟踪 + 短时外推）
 ├── tests/                  # 单元测试
 ├── docs/                   # 开发总结等文档
 ├── HANDOFF.md              # 交接文档（继续开发请先读）
@@ -32,6 +36,10 @@ PythonProject/
 | `perception/config.py` | 激光雷达 / 摄像头检测范围、FOV、噪声、检测概率 |
 | `hmi/config.py` | 告警列表容量等 HMI 参数 |
 | `control/config.py` | 预瞄距离、巡航速、纵向 Kp、STANDBY 加速度 |
+| `planning/config.py` | 路径密化分辨率、巡航速、障碍/终点减速参数 |
+| `visualize/config.py` | 可视化开关、刷新间隔、图尺寸、轨迹长度 |
+| `localization/config.py` | GPS 周期/噪声、过程噪声、初始协方差 |
+| `prediction/config.py` | 预测时域、关联距离、coast、速度阈值 |
 
 > 根目录遗留的 `config.py` 已移除；Python 统一从 `config/` 包导入全局配置。
 
@@ -42,14 +50,22 @@ PythonProject/
 - **perception** — 激光雷达与摄像头模拟（距离/FOV 过滤、噪声、类别识别）及空间匹配融合
 - **hmi** — 订阅 `hmi_alert` 主题，分级告警管理
 - **control** — Pure Pursuit 路径跟踪 + 纵向速度 P 控制（已接入 `main.py`）
+- **planning** — 参考路径密化 + 基于障碍/终点的纵向 `target_speed`（已接入 `main.py`）
+- **visualize** — matplotlib 鸟瞰：车辆、航点/密化路径、预瞄点、障碍与融合检测、HUD（含估计轨迹）
+- **localization** — 4 状态 EKF（里程计预测 + 含噪 GPS）；规划/控制吃估计位姿，感知吃真值
+- **prediction** — 融合检测最近邻跟踪 + 恒速短时预测，供 TrajPlanner 前瞻减速
 
 ## 规划中模块
 
-`scaffold_config.json` 中已规划但尚未实现：localization、prediction、planning、visualize。
+主栈模块已按 `scaffold_config.json` 落地；后续以打磨（绕障、\(L_d(v)\)、录帧等）为主。
 
 ## 文档
 
 - [HANDOFF.md](HANDOFF.md) — 交接与继续开发指引
+- [docs/SUMMARY_2026-08-01_prediction.md](docs/SUMMARY_2026-08-01_prediction.md) — prediction 模块开发总结
+- [docs/SUMMARY_2026-08-01_localization.md](docs/SUMMARY_2026-08-01_localization.md) — localization / EKF 开发总结
+- [docs/SUMMARY_2026-08-01_visualize.md](docs/SUMMARY_2026-08-01_visualize.md) — visualize 模块开发总结
+- [docs/SUMMARY_2026-08-01_planning.md](docs/SUMMARY_2026-08-01_planning.md) — planning 模块开发总结与算法原理
 - [docs/SUMMARY_2026-07-31_control.md](docs/SUMMARY_2026-07-31_control.md) — control 模块开发总结与算法原理
 
 运行脚手架可创建空目录占位：
@@ -61,7 +77,10 @@ python project_scaffold.py
 ## 环境要求
 
 - Python 3.10+（已在 3.14 下验证）
-- 运行时无第三方依赖
+- 核心仿真、EKF、预测无第三方数值库依赖；鸟瞰可视化需要 `matplotlib`（见 `requirements.txt`）
+- 关闭窗口渲染：将 `visualize/config.py` 中 `ENABLE_VISUALIZE` 设为 `False`
+- 鸟瞰交互：`Space` 暂停/继续；`Replay` 按钮或 `r` 重播；结束后窗口默认保持，关窗或 `q` 退出（`HOLD_ON_FINISH`）
+- 变更记录见 [CHANGELOG.md](CHANGELOG.md)
 
 ## 快速开始
 
@@ -70,10 +89,10 @@ python project_scaffold.py
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
-# 安装开发依赖（pytest）
+# 安装依赖（pytest + matplotlib）
 pip install -r requirements.txt
 
-# 运行仿真
+# 运行仿真（默认弹出鸟瞰图）
 python main.py
 
 # 运行全部测试
@@ -93,8 +112,10 @@ PYTHONPATH=. python tests/test_state_machine.py
 1. t=0.5s 上电（OFF → PASSIVE）
 2. t=2.5s 自检通过（PASSIVE → STANDBY）
 3. STANDBY 阶段加速，车速 ≥ 5 m/s 时激活 AD（STANDBY → ACTIVE）
-4. ACTIVE 阶段 Pure Pursuit 跟踪参考路径，并以约 10 m/s 为目标速度巡航
-5. 每帧更新感知链路并发布 `perception_update` 事件
+4. 每帧先更新感知融合，再由 PathPlanner 密化路径、TrajPlanner 输出 `target_speed`
+5. 融合结果经 ObstaclePredictor 做恒速预测，TrajPlanner 结合预测前瞻调速
+6. ACTIVE 阶段用 EKF 估计位姿做 Pure Pursuit（默认巡航约 10 m/s，近终点/障碍减速）
+7. 每帧 EKF 预测并按 GPS 周期融合含噪位置；鸟瞰显示真值、估计与预测轨迹
 
 ## 状态机激活条件
 

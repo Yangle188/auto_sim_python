@@ -50,6 +50,18 @@ class PurePursuit:
         steer = max(-MAX_STEER_ANGLE, min(MAX_STEER_ANGLE, steer))
         return acc, steer
 
+    def get_lookahead_point(
+        self,
+        vehicle_state: dict,
+        path: List[Tuple[float, float]],
+    ) -> Optional[Tuple[float, float]]:
+        """供可视化等模块查询当前预瞄点；空路径返回 None。"""
+        if not path:
+            return None
+        return self._find_lookahead_point(
+            vehicle_state["x"], vehicle_state["y"], path
+        )
+
     def _find_lookahead_point(
         self,
         x: float,
