@@ -8,7 +8,7 @@
 
 ## 1. 一句话现状
 
-模块化自动驾驶仿真原型（AutoSim）主链路已齐，并支持 **Web 实时鸟瞰 + 场景配置面板**（Route/障碍 Apply & Restart）；CLI matplotlib 仍可用。`pytest` 全绿。
+模块化自动驾驶仿真原型（AutoSim）主链路已齐，并支持 **Web 实时鸟瞰 + 场景配置面板**；世界模型：车道宽 3.2m、车宽 2.5m、状态点为后轴中心贴车道中心线。CLI matplotlib 仍可用。`pytest` 全绿。
 
 ---
 

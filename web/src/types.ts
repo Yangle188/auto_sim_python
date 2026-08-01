@@ -43,6 +43,16 @@ export interface VehicleState {
   speed: number;
 }
 
+export interface VehicleGeom {
+  width: number;
+  length: number;
+  wheel_base: number;
+  rear_overhang: number;
+  front_overhang?: number;
+  ref_point: string;
+  lane_width: number;
+}
+
 export interface Snapshot {
   t: number;
   state: string;
@@ -51,6 +61,10 @@ export interface Snapshot {
   waypoints: Point[];
   path: Point[];
   lookahead: Point | null;
+  lane_width?: number;
+  lane_left?: Point[];
+  lane_right?: Point[];
+  vehicle_geom?: VehicleGeom;
   obstacles: { x: number; y: number; width: number; height: number }[];
   fused: { x: number; y: number; source?: string }[];
   predictions: { trajectory: Point[]; coasting?: boolean }[];

@@ -13,12 +13,15 @@ from .config import (
 
 class Vehicle:
     """
-    运动学自行车模型
-    状态：x, y, yaw(航向角, rad), speed(车速, m/s)
-    控制输入：acceleration(加速度), steer_angle(前轮转角)
+    运动学自行车模型。
+
+    状态点 (x, y) = **后轴中心**（应落在车道中心线上）；
+    yaw = 航向角 rad；speed = 车速 m/s。
+    控制输入：acceleration、steer_angle（前轮转角）。
     """
+
     def __init__(self):
-        # 车辆初始状态：原点、朝向x轴正方向、静止
+        # 后轴中心置于原点、朝向 x 轴正方向、静止
         self.x = 0.0
         self.y = 0.0
         self.yaw = 0.0
@@ -32,12 +35,13 @@ class Vehicle:
         self.speed = speed
 
     def get_state(self) -> dict:
-        """获取当前车辆状态字典"""
+        """获取当前车辆状态（x/y 为后轴中心）。"""
         return {
             "x": self.x,
             "y": self.y,
             "yaw": self.yaw,
-            "speed": self.speed
+            "speed": self.speed,
+            "ref_point": "rear_axle",
         }
 
     def step(self, acceleration: float, steer_angle: float):

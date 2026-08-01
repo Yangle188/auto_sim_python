@@ -4,6 +4,11 @@
 
 ## 2026-08-01
 
+### Simulator / World
+
+- 车道宽 `LANE_WIDTH=3.2m`；自车宽 `VEHICLE_WIDTH=2.5m`、长 4.8m。
+- 明确状态点 `(x,y)` = **后轴中心**，沿车道中心线；鸟瞰画车体矩形 + 后轴十字，并绘制左右车道边界。
+
 ### Web Viz & Scene Config
 
 - 新增 `SimSession` + `SceneConfig`：仿真步进与场景注入从 `main` 抽离，snapshot JSON 化。

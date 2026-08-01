@@ -17,9 +17,13 @@ PAUSE_SEC = 0.001
 # 坐标轴相对场景边界的边距（m）
 VIEW_PADDING = 8.0
 
-# 自车三角形尺寸（m）
-VEHICLE_LENGTH = 3.0
-VEHICLE_WIDTH = 1.6
+# 自车外形与车道宽度：与 simulator 保持一致（后轴中心为参考点）
+from simulator.config import (  # noqa: E402
+    LANE_WIDTH,
+    REAR_OVERHANG,
+    VEHICLE_LENGTH,
+    VEHICLE_WIDTH,
+)
 
 # 仿真结束后是否保持窗口，直到用户关闭（或按 q）
 HOLD_ON_FINISH = True

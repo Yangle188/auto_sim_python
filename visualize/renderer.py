@@ -6,6 +6,8 @@ import math
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple
 
+from simulator.geometry import ego_footprint_world
+
 from . import config as viz_config
 from .config import (
     FIG_SIZE,
@@ -15,6 +17,7 @@ from .config import (
     VIEW_PADDING,
     VEHICLE_LENGTH,
     VEHICLE_WIDTH,
+    REAR_OVERHANG,
     HOLD_ON_FINISH,
     PAUSE_POLL_SEC,
 )
@@ -133,6 +136,12 @@ class Renderer:
             [], [], "s-", color="#7f7f7f", markersize=5, linewidth=1.0, label="waypoints"
         )
         self._route_link_lines: List[Any] = []
+        (self._line_lane_left,) = self.ax.plot(
+            [], [], "-", color="#94a3b8", linewidth=1.0, alpha=0.7, label="lane L"
+        )
+        (self._line_lane_right,) = self.ax.plot(
+            [], [], "-", color="#94a3b8", linewidth=1.0, alpha=0.7, label="lane R"
+        )
         (self._line_path,) = self.ax.plot(
             [], [], "-", color="#1f77b4", linewidth=1.2, alpha=0.85, label="dense path"
         )
@@ -146,17 +155,20 @@ class Renderer:
             [], [], "*", color="#e377c2", markersize=14, label="lookahead"
         )
         self._ego_poly = self._Polygon(
-            [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+            [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
             closed=True,
             facecolor="#ffbb78",
             edgecolor="#ff7f0e",
             linewidth=1.5,
             zorder=5,
-            label="ego true",
+            label="ego true (rear axle)",
         )
         self.ax.add_patch(self._ego_poly)
+        (self._pt_rear_axle,) = self.ax.plot(
+            [], [], "+", color="#f97316", markersize=10, markeredgewidth=1.5, zorder=7, label="rear axle"
+        )
         self._ego_est_poly = self._Polygon(
-            [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+            [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
             closed=True,
             facecolor="none",
             edgecolor="#17becf",
@@ -217,6 +229,17 @@ class Renderer:
         else:
             self._line_path.set_data([], [])
 
+        lane_left = list(snapshot.get("lane_left") or [])
+        lane_right = list(snapshot.get("lane_right") or [])
+        if lane_left:
+            self._line_lane_left.set_data(*zip(*lane_left))
+        else:
+            self._line_lane_left.set_data([], [])
+        if lane_right:
+            self._line_lane_right.set_data(*zip(*lane_right))
+        else:
+            self._line_lane_right.set_data([], [])
+
         self._trail.append((x, y))
         if self._trail:
             tx, ty = zip(*self._trail)
@@ -232,7 +255,17 @@ class Renderer:
             if self._trail_est:
                 etx, ety = zip(*self._trail_est)
                 self._line_trail_est.set_data(etx, ety)
-            self._ego_est_poly.set_xy(self._ego_triangle(ex, ey, eyaw))
+            geom = snapshot.get("vehicle_geom") or {}
+            self._ego_est_poly.set_xy(
+                self._ego_footprint(
+                    ex,
+                    ey,
+                    eyaw,
+                    length=float(geom.get("length", VEHICLE_LENGTH)),
+                    width=float(geom.get("width", VEHICLE_WIDTH)),
+                    rear_overhang=float(geom.get("rear_overhang", REAR_OVERHANG)),
+                )
+            )
             self._ego_est_poly.set_visible(True)
             err_xy = math.hypot(ex - x, ey - y)
         else:
@@ -244,7 +277,18 @@ class Renderer:
         else:
             self._pt_lookahead.set_data([], [])
 
-        self._ego_poly.set_xy(self._ego_triangle(x, y, yaw))
+        geom = snapshot.get("vehicle_geom") or {}
+        self._ego_poly.set_xy(
+            self._ego_footprint(
+                x,
+                y,
+                yaw,
+                length=float(geom.get("length", VEHICLE_LENGTH)),
+                width=float(geom.get("width", VEHICLE_WIDTH)),
+                rear_overhang=float(geom.get("rear_overhang", REAR_OVERHANG)),
+            )
+        )
+        self._pt_rear_axle.set_data([x], [y])
         self._redraw_obstacles(obstacles)
         self._redraw_fused(fused)
         self._redraw_predictions(list(snapshot.get("predictions") or []))
@@ -413,19 +457,17 @@ class Renderer:
             title = self._base_title
         self.ax.set_title(title)
 
-    def _ego_triangle(
-        self, x: float, y: float, yaw: float
+    def _ego_footprint(
+        self,
+        x: float,
+        y: float,
+        yaw: float,
+        length: float = VEHICLE_LENGTH,
+        width: float = VEHICLE_WIDTH,
+        rear_overhang: float = REAR_OVERHANG,
     ) -> List[Tuple[float, float]]:
-        """车头朝向的等腰三角形（车体坐标：前尖）。"""
-        L = VEHICLE_LENGTH
-        W = VEHICLE_WIDTH
-        local = [
-            (0.5 * L, 0.0),
-            (-0.5 * L, 0.5 * W),
-            (-0.5 * L, -0.5 * W),
-        ]
-        c, s = math.cos(yaw), math.sin(yaw)
-        return [(x + c * lx - s * ly, y + s * lx + c * ly) for lx, ly in local]
+        """后轴中心 (x,y) 为参考点的车体矩形。"""
+        return ego_footprint_world(x, y, yaw, length, width, rear_overhang)
 
     def _clear_patches(self, patches: List[Any]) -> None:
         for p in patches:

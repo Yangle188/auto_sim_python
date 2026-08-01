@@ -13,17 +13,23 @@ function colorForLimit(v: number, vMin: number, vMax: number): string {
   return `rgb(${r},${g},${b})`;
 }
 
-function egoTriangle(
+/** 后轴中心为原点的车体矩形（+x 朝车头） */
+function egoFootprint(
   x: number,
   y: number,
   yaw: number,
-  L = 3,
-  W = 1.6
+  length = 4.8,
+  width = 2.5,
+  rearOverhang = 1.0
 ): [number, number][] {
+  const xRear = -rearOverhang;
+  const xFront = length - rearOverhang;
+  const halfW = 0.5 * width;
   const local: [number, number][] = [
-    [0.5 * L, 0],
-    [-0.5 * L, 0.5 * W],
-    [-0.5 * L, -0.5 * W],
+    [xFront, halfW],
+    [xFront, -halfW],
+    [xRear, -halfW],
+    [xRear, halfW],
   ];
   const c = Math.cos(yaw);
   const s = Math.sin(yaw);
@@ -117,6 +123,12 @@ export function BirdEyeCanvas({ snapshot, paused }: Props) {
         ys.push(y);
       }
     }
+    for (const side of [snapshot.lane_left, snapshot.lane_right]) {
+      for (const [x, y] of side || []) {
+        xs.push(x);
+        ys.push(y);
+      }
+    }
     for (const o of snapshot.obstacles || []) {
       xs.push(o.x - o.width / 2, o.x + o.width / 2);
       ys.push(o.y - o.height / 2, o.y + o.height / 2);
@@ -182,16 +194,28 @@ export function BirdEyeCanvas({ snapshot, paused }: Props) {
       ctx.fillText(label, lx, ly);
     }
 
-    if (snapshot.path?.length) {
-      ctx.strokeStyle = "rgba(96,165,250,0.85)";
-      ctx.lineWidth = 1.5;
+    const drawPolyLine = (
+      pts: [number, number][] | undefined,
+      color: string,
+      width: number,
+      dash?: number[]
+    ) => {
+      if (!pts || pts.length < 2) return;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.setLineDash(dash || []);
       ctx.beginPath();
-      snapshot.path.forEach(([x, y], i) => {
+      pts.forEach(([x, y], i) => {
         if (i === 0) ctx.moveTo(tx(x), ty(y));
         else ctx.lineTo(tx(x), ty(y));
       });
       ctx.stroke();
-    }
+      ctx.setLineDash([]);
+    };
+
+    drawPolyLine(snapshot.lane_left as [number, number][] | undefined, "rgba(148,163,184,0.75)", 1.2);
+    drawPolyLine(snapshot.lane_right as [number, number][] | undefined, "rgba(148,163,184,0.75)", 1.2);
+    drawPolyLine(snapshot.path as [number, number][] | undefined, "rgba(96,165,250,0.85)", 1.5);
 
     const drawTrail = (pts: [number, number][], color: string, dash?: number[]) => {
       if (pts.length < 2) return;
@@ -258,6 +282,12 @@ export function BirdEyeCanvas({ snapshot, paused }: Props) {
       ctx.fill();
     }
 
+    const geom = snapshot.vehicle_geom;
+    const vLen = geom?.length ?? 4.8;
+    const vWid = geom?.width ?? 2.5;
+    const vRear = geom?.rear_overhang ?? 1.0;
+    const laneW = snapshot.lane_width ?? geom?.lane_width ?? 3.2;
+
     const drawEgo = (
       x: number,
       y: number,
@@ -266,9 +296,9 @@ export function BirdEyeCanvas({ snapshot, paused }: Props) {
       stroke: string,
       dashed = false
     ) => {
-      const tri = egoTriangle(x, y, yaw);
+      const poly = egoFootprint(x, y, yaw, vLen, vWid, vRear);
       ctx.beginPath();
-      tri.forEach(([px, py], i) => {
+      poly.forEach(([px, py], i) => {
         if (i === 0) ctx.moveTo(tx(px), ty(py));
         else ctx.lineTo(tx(px), ty(py));
       });
@@ -280,6 +310,16 @@ export function BirdEyeCanvas({ snapshot, paused }: Props) {
       if (!dashed) ctx.fill();
       ctx.stroke();
       ctx.setLineDash([]);
+      // 后轴中心标记（贴车道中心线）
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 1.5;
+      const r = 4;
+      ctx.beginPath();
+      ctx.moveTo(tx(x) - r, ty(y));
+      ctx.lineTo(tx(x) + r, ty(y));
+      ctx.moveTo(tx(x), ty(y) - r);
+      ctx.lineTo(tx(x), ty(y) + r);
+      ctx.stroke();
     };
 
     const v = snapshot.vehicle;
@@ -294,23 +334,23 @@ export function BirdEyeCanvas({ snapshot, paused }: Props) {
     const lines = [
       `时间 ${snapshot.t.toFixed(2)} s · 自动驾驶 ${adStateZh(snapshot.state)}${paused ? " · 【已暂停】" : ""}`,
       `车速 ${v.speed.toFixed(2)} · 目标速 ${snapshot.v_cmd.toFixed(2)} · 限速 ${limit}`,
-      `转角 ${((snapshot.steer * 180) / Math.PI).toFixed(1)}° · 位置 (${v.x.toFixed(1)}, ${v.y.toFixed(1)})`,
+      `转角 ${((snapshot.steer * 180) / Math.PI).toFixed(1)}° · 后轴 (${v.x.toFixed(1)}, ${v.y.toFixed(1)})`,
+      `车道宽 ${laneW.toFixed(1)} m · 车宽 ${vWid.toFixed(1)} m · 参考点=后轴中心`,
     ];
     ctx.fillStyle = "rgba(15,20,25,0.78)";
-    ctx.fillRect(12, 12, 420, 72);
+    ctx.fillRect(12, 12, 440, 88);
     ctx.fillStyle = "#e2e8f0";
     ctx.font = "500 12px 'IBM Plex Mono', 'PingFang SC', monospace";
     lines.forEach((line, i) => ctx.fillText(line, 22, 34 + i * 18));
 
-    // 图例
     const legend = [
-      "实线=主路  虚线=辅路",
-      "颜色深浅≈限速高低",
-      "橙=真值车  青虚线=估计",
-      "紫虚线=预测  粉点=预瞄",
+      "灰线=车道边界(宽3.2m)",
+      "中心线跟踪·后轴贴中线",
+      "橙框=真值车(宽2.5m)",
+      "青虚线=估计  十字=后轴",
     ];
     ctx.fillStyle = "rgba(15,20,25,0.72)";
-    ctx.fillRect(12, cssH - 92, 200, 80);
+    ctx.fillRect(12, cssH - 92, 210, 80);
     ctx.fillStyle = "#cbd5e1";
     ctx.font = "500 11px 'DM Sans', 'PingFang SC', sans-serif";
     legend.forEach((line, i) => ctx.fillText(line, 22, cssH - 72 + i * 16));

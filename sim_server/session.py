@@ -304,6 +304,7 @@ class SimSession:
         steer: float,
         v_limit: Optional[float],
     ) -> Dict[str, Any]:
+        lane = self.world.get_lane_boundaries(path if path else self.world.reference_path)
         return {
             "t": self.sim_time,
             "state": self.state_machine.get_state(),
@@ -312,6 +313,10 @@ class SimSession:
             "waypoints": [list(p) for p in self.world.reference_path],
             "path": [list(p) for p in path],
             "lookahead": list(lookahead) if lookahead is not None else None,
+            "lane_width": float(lane["lane_width"]),
+            "lane_left": [list(p) for p in lane["left"]],
+            "lane_right": [list(p) for p in lane["right"]],
+            "vehicle_geom": self.world.get_vehicle_geom(),
             "obstacles": [
                 {
                     "x": o.x,

@@ -9,6 +9,8 @@
     "simulator/config.py",
     "simulator/world.py",
     "simulator/vehicle.py",
+    "simulator/geometry.py",
+    "tests/test_world_geometry.py",
     "perception/__init__.py",
     "perception/config.py",
     "perception/camera_sim.py",
