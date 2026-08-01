@@ -19,7 +19,7 @@ function egoFootprint(
   y: number,
   yaw: number,
   length = 4.8,
-  width = 2.5,
+  width = 1.96,
   rearOverhang = 1.0
 ): [number, number][] {
   const xRear = -rearOverhang;
@@ -284,7 +284,7 @@ export function BirdEyeCanvas({ snapshot, paused }: Props) {
 
     const geom = snapshot.vehicle_geom;
     const vLen = geom?.length ?? 4.8;
-    const vWid = geom?.width ?? 2.5;
+    const vWid = geom?.width ?? 1.96;
     const vRear = geom?.rear_overhang ?? 1.0;
     const laneW = snapshot.lane_width ?? geom?.lane_width ?? 3.2;
 
@@ -346,7 +346,7 @@ export function BirdEyeCanvas({ snapshot, paused }: Props) {
     const legend = [
       "灰线=车道边界(宽3.2m)",
       "中心线跟踪·后轴贴中线",
-      "橙框=真值车(宽2.5m)",
+      "橙框=真值车(宽1.96m)",
       "青虚线=估计  十字=后轴",
     ];
     ctx.fillStyle = "rgba(15,20,25,0.72)";

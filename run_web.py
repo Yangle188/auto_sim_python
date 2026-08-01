@@ -33,6 +33,28 @@ def _python() -> str:
     return sys.executable
 
 
+def _in_project_venv() -> bool:
+    """不能用 Path.resolve() 比 executable：venv 的 python 常是指向系统解释器的符号链接。"""
+    try:
+        return Path(sys.prefix).resolve() == (ROOT / ".venv").resolve()
+    except OSError:
+        return False
+
+
+def _ensure_venv_python() -> None:
+    """
+    若项目有 .venv 且当前不在其中，则用 venv 重新 exec。
+    避免「系统 python 跑脚本、依赖却装进 .venv」导致 ModuleNotFoundError。
+    """
+    if not VENV_PY.is_file():
+        return
+    if _in_project_venv():
+        return
+    want = str(VENV_PY)
+    print(f"[run_web] 切换到项目虚拟环境: {want}")
+    os.execv(want, [want, str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
 def _which_npm() -> str | None:
     found = shutil.which("npm")
     if found:
@@ -96,6 +118,8 @@ def open_browser_later(url: str, delay: float = 1.2) -> None:
 
 
 def main() -> None:
+    _ensure_venv_python()
+
     parser = argparse.ArgumentParser(description="一键启动 AutoSim Web")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
@@ -111,22 +135,28 @@ def main() -> None:
     if not args.skip_build:
         ensure_web_build(rebuild=args.rebuild)
 
-    # 确保依赖可导入
+    # 确保依赖可导入（已保证在 venv 内时，install 与 import 同一解释器）
     try:
         import uvicorn  # noqa: F401
         import fastapi  # noqa: F401
     except ImportError:
         print("[run_web] 缺少 Python 依赖，正在 pip install -r requirements.txt …")
         subprocess.check_call(
-            [_python(), "-m", "pip", "install", "-r", str(ROOT / "requirements.txt")]
+            [sys.executable, "-m", "pip", "install", "-r", str(ROOT / "requirements.txt")]
         )
+        import importlib
+
+        importlib.invalidate_caches()
+        import uvicorn  # noqa: F401
+        import fastapi  # noqa: F401
 
     url = f"http://{args.host}:{args.port}"
     print("=" * 60)
     print(" AutoSim Web")
+    print(f"  解释器  : {sys.executable}")
     print(f"  UI / API : {url}")
     print(f"  Docs     : {url}/docs")
-    print(f"  启动仿真 : 浏览器点 Start，或 Space")
+    print(f"  启动仿真 : 浏览器点「开始」，或空格键")
     print("=" * 60)
 
     if not args.no_browser:

@@ -14,7 +14,7 @@ MAX_DECEL = -3.0
 LANE_WIDTH = 3.2
 
 # --- 自车外形（状态点 (x,y) = 后轴中心，应落在车道中心线上）---
-VEHICLE_WIDTH = 2.5
+VEHICLE_WIDTH = 1.96
 VEHICLE_LENGTH = 4.8
 REAR_OVERHANG = 1.0  # 后轴到车尾
 # 前轴到车头 = LENGTH - WHEEL_BASE - REAR_OVERHANG

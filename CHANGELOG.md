@@ -6,7 +6,7 @@
 
 ### Simulator / World
 
-- 车道宽 `LANE_WIDTH=3.2m`；自车宽 `VEHICLE_WIDTH=2.5m`、长 4.8m。
+- 车道宽 `LANE_WIDTH=3.2m`；自车宽 `VEHICLE_WIDTH=1.96m`、长 4.8m。
 - 明确状态点 `(x,y)` = **后轴中心**，沿车道中心线；鸟瞰画车体矩形 + 后轴十字，并绘制左右车道边界。
 
 ### Web Viz & Scene Config
@@ -15,7 +15,7 @@
 - FastAPI：`/api/scene`、`/api/control`、WebSocket `/ws/sim` 实时推帧。
 - React（Vite）鸟瞰 Canvas + 路线/障碍配置面板；**Apply & Restart** 重开 episode。
 - CLI `python main.py` 仍走 matplotlib；入口 `python -m sim_server`。
-- 一键脚本：`python run_web.py` / `./run_web.sh`（必要时自动 build、启动服务并打开浏览器）。
+- 一键脚本：`python run_web.py` / `./run_web.sh`（必要时自动 build、启动服务并打开浏览器；**自动使用项目 `.venv`**）。
 - 自定义路线：路段支持中文名 / 主辅路 / 机动（左/右转等）；默认「城市：左右转+主辅路」预设；Web 界面与鸟瞰 HUD/图例中文化。
 
 ### Map
@@ -52,5 +52,6 @@
 
 ### Docs / Tooling
 
-- 交接文档 `HANDOFF.md`、各模块 `docs/SUMMARY_*.md`、`README.md`、`scaffold_config.json` 同步。
+- 交接文档 `HANDOFF.md`、日总结 `docs/SUMMARY_2026-08-01_daily.md`、`SUMMARY_*_web_viz/simulator/map.md`、`README.md`、`scaffold_config.json` 同步。
 - 运行依赖：`matplotlib`（CLI 可视化）、`fastapi`/`uvicorn`（Web）；核心仿真 / EKF / 预测仍无强制数值库。
+- 一键入口：`run_web.py` / `run_web.sh`。

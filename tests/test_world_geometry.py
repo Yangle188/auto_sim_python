@@ -8,7 +8,7 @@ from simulator.world import SimulationWorld
 
 def test_lane_and_vehicle_constants():
     assert LANE_WIDTH == 3.2
-    assert VEHICLE_WIDTH == 2.5
+    assert VEHICLE_WIDTH == 1.96
     assert VEHICLE_WIDTH < LANE_WIDTH
 
 
@@ -55,6 +55,6 @@ def test_world_lane_and_geom_api():
     lane = world.get_lane_boundaries()
     assert len(lane["left"]) == 2
     geom = world.get_vehicle_geom()
-    assert geom["width"] == 2.5
+    assert geom["width"] == 1.96
     assert geom["ref_point"] == "rear_axle"
     assert world.vehicle.get_state()["ref_point"] == "rear_axle"

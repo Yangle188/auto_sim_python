@@ -35,7 +35,7 @@ PythonProject/
 |------|------|
 | `config/base_config.py` | 仿真步长 `DT`、AD 状态枚举、HMI 告警等级 |
 | `framework/config.py` | 状态机切换阈值（激活车速范围、自检超时等） |
-| `simulator/config.py` | 车辆动力学参数（轴距、最大车速、加减速度、转角） |
+| `simulator/config.py` | 动力学 + 车道宽 3.2m、车宽 1.96m、后轴几何 |
 | `perception/config.py` | 激光雷达 / 摄像头检测范围、FOV、噪声、检测概率 |
 | `hmi/config.py` | 告警列表容量等 HMI 参数 |
 | `control/config.py` | 预瞄距离、巡航速、纵向 Kp、STANDBY 加速度 |
@@ -50,7 +50,7 @@ PythonProject/
 ## 已实现模块
 
 - **framework** — 五态状态机（OFF → PASSIVE → STANDBY → ACTIVE → OVERRIDE）+ 发布/订阅事件总线
-- **simulator** — 运动学自行车模型、静态障碍物、参考路径
+- **simulator** — 运动学自行车模型（后轴中心）、车道 3.2m 边界、车宽 1.96m、静态障碍、中心线路径
 - **perception** — 激光雷达与摄像头模拟（距离/FOV 过滤、噪声、类别识别）及空间匹配融合
 - **hmi** — 订阅 `hmi_alert` 主题，分级告警管理
 - **control** — Pure Pursuit 路径跟踪 + 纵向速度 P 控制（已接入 `main.py`）
@@ -67,8 +67,10 @@ PythonProject/
 
 ## 文档
 
-- [HANDOFF.md](HANDOFF.md) — 交接与继续开发指引
+- [HANDOFF.md](HANDOFF.md) — 交接与继续开发指引（**明天先读**）
+- [docs/SUMMARY_2026-08-01_daily.md](docs/SUMMARY_2026-08-01_daily.md) — 2026-08-01 日收工总览
 - [docs/SUMMARY_2026-08-01_web_viz.md](docs/SUMMARY_2026-08-01_web_viz.md) — Web 实时渲染与场景配置
+- [docs/SUMMARY_2026-08-01_simulator.md](docs/SUMMARY_2026-08-01_simulator.md) — 车道/后轴几何
 - [docs/SUMMARY_2026-08-01_map.md](docs/SUMMARY_2026-08-01_map.md) — map 模块开发总结
 - [docs/SUMMARY_2026-08-01_prediction.md](docs/SUMMARY_2026-08-01_prediction.md) — prediction 模块开发总结
 - [docs/SUMMARY_2026-08-01_localization.md](docs/SUMMARY_2026-08-01_localization.md) — localization / EKF 开发总结
@@ -103,10 +105,10 @@ pip install -r requirements.txt
 # CLI 仿真（matplotlib 鸟瞰）
 python main.py
 
-# Web 仿真（一键：必要时自动 npm build，开服务并打开浏览器）
+# Web 仿真（一键：自动用 .venv；必要时 npm build；开服务并打开浏览器）
 python run_web.py
 # 或: ./run_web.sh
-# 等价手动: cd web && npm run build && python -m sim_server
+# 前端有改动: python run_web.py --rebuild
 
 # 运行全部测试
 pytest

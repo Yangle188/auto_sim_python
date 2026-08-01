@@ -2,16 +2,17 @@
 
 ## 目标
 
-- 浏览器鸟瞰实时渲染（替代简陋 matplotlib 交互为主入口）
-- 配置路线 Link/限速、障碍物后 **Apply & Restart** 重开 episode
+- 浏览器鸟瞰实时渲染（主交互入口）
+- 配置路线 Link/限速、障碍物后 **应用并重开** episode
 - CLI `python main.py` + matplotlib 仍可用
 
 ## 架构
 
 - `sim_server/session.py`：`SimSession` 步进仿真，snapshot JSON 化
-- `sim_server/scene_schema.py`：`SceneConfig`（Pydantic）
+- `sim_server/scene_schema.py`：`SceneConfig`（Pydantic）+ 预设
 - `sim_server/app.py`：FastAPI REST + WebSocket
-- `web/`：Vite + React + Canvas
+- `web/`：Vite + React + Canvas（中文 UI）
+- `run_web.py`：一键 build（若需）+ 启服务 + 开浏览器；**自动切到项目 `.venv`**
 
 ## API
 
@@ -19,27 +20,28 @@
 |------|------|
 | `GET /api/scene` | draft / applied / status |
 | `PUT /api/scene` | 写入草稿（校验 Route） |
+| `GET /api/presets` | 预设列表与完整 scene |
 | `POST /api/control` | `start` / `pause` / `resume` / `reset` |
 | `WS /ws/sim` | `{type:"frame"|"status", data:...}` |
+
+Snapshot 另含：`lane_left` / `lane_right` / `vehicle_geom`（见 simulator 几何 SUMMARY）。
 
 ## 启动
 
 ```bash
-# 后端
 cd PythonProject
-source .venv/bin/activate
-pip install -r requirements.txt
-python -m sim_server          # http://127.0.0.1:8000
+# 首次：source .venv/bin/activate && pip install -r requirements.txt
 
-# 前端开发（另开终端）
-cd web
-npm install
-npm run dev                   # http://127.0.0.1:5173 代理到 8000
+# 推荐（无需先 activate；脚本会切到 .venv）
+python run_web.py              # 或 ./run_web.sh
+python run_web.py --rebuild    # 前端有改动时
 
-# 生产：先 build 再只开后端（挂载 web/dist）
-npm run build
-python -m sim_server
+# 开发双端
+.venv/bin/python -m sim_server # :8000
+cd web && npm run dev          # :5173 代理 API/WS
 ```
+
+**排障**：`ModuleNotFoundError: uvicorn` → 旧版脚本用了系统 Python；当前 `run_web.py` 已按 `sys.prefix` 检测并切换 `.venv`。端口占用：`lsof -ti:8000 | xargs kill -9`。
 
 ## 配置生效策略
 
@@ -49,12 +51,12 @@ python -m sim_server
 
 路段字段：`name`（中文）、`road_class`（`main`/`aux`）、`maneuver`（`straight`/`left`/`right`/`merge`/`diverge`）。
 
-预设：`GET /api/presets`
+预设：
 
 - `urban_turns`：主路直行 → 右转进辅路 → 辅路直行 → 左转汇入 → 主路直行
 - `simple`：旧近直线三段
 
-鸟瞰：主路实线、辅路虚线；路段中点中文标注；HUD/图例中文。
+鸟瞰：主路实线、辅路虚线；路段中点中文标注；车道边界；后轴十字；HUD/图例中文。
 
 ## 测试
 
