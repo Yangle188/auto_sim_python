@@ -30,7 +30,8 @@ def test_follow_matches_slower_lead():
     )
     v = planner.plan(ego, path, predictions=[pred], speed_limit=12.0)
     assert v < 10.0
-    assert v > 4.0
+    # 保险杠净空修正后目标速略低于纯时距匹配
+    assert v > 3.0
     assert planner.last_lead is not None
     assert planner.last_lead["source"] == "follow"
 

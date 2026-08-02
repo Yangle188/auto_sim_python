@@ -23,7 +23,7 @@ def build_acc_highway_route() -> Route:
             Link(
                 "H2",
                 ((120.0, 0.0), (320.0, 0.0)),
-                12.0,
+                8.0,
                 name="三车道直行后段",
                 road_class="main",
                 maneuver="straight",

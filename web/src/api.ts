@@ -40,17 +40,32 @@ export async function putScene(scene: SceneConfig): Promise<void> {
   );
 }
 
+export type ControlAction =
+  | "start"
+  | "pause"
+  | "resume"
+  | "reset"
+  | "step_prev"
+  | "step_next"
+  | "seek"
+  | "activate"
+  | "deactivate";
+
 export async function postControl(
-  action: "start" | "pause" | "resume" | "reset"
-): Promise<StatusPayload> {
+  action: ControlAction,
+  extra?: { frame_i?: number }
+): Promise<{ status: StatusPayload; frame?: unknown }> {
   const data = await jsonOrThrow(
     await fetch("/api/control", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ action, ...(extra || {}) }),
     })
   );
-  return data.status as StatusPayload;
+  return {
+    status: data.status as StatusPayload,
+    frame: data.frame,
+  };
 }
 
 export function simWsUrl(): string {

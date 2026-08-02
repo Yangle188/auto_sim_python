@@ -56,35 +56,61 @@ def test_traj_cruise_no_obstacle():
 
 def test_traj_slow_near_obstacle():
     """正前方路径上障碍应显著降速"""
+    from planning.config import DEFAULT_LEAD_HALF_LENGTH, EGO_FRONT_LENGTH
+
     path = PathPlanner().plan([(0.0, 0.0), (100.0, 0.0)])
     traj = TrajPlanner()
-    # 障碍在 x=20，车在原点 → 距离约 20，处于 (STOP, SLOW) 减速区
-    v = traj.plan(_state(x=0.0, y=0.0), path, obstacles=[_obs(20.0, 0.0)])
+    # 净空约 15m，处于 (STOP, SLOW) 减速区
+    cx = EGO_FRONT_LENGTH + DEFAULT_LEAD_HALF_LENGTH + 15.0
+    v = traj.plan(_state(x=0.0, y=0.0), path, obstacles=[_obs(cx, 0.0)])
     assert v < CRUISE_SPEED
     assert v > 0.0
     print("✅ 障碍减速测试通过")
 
 
 def test_traj_stop_very_near_obstacle():
-    """障碍纵向距离 <= STOP_DISTANCE 时目标车速为 0"""
+    """保险杠净空 <= STOP_DISTANCE 时目标车速为 0"""
+    from planning.config import DEFAULT_LEAD_HALF_LENGTH, EGO_FRONT_LENGTH
+
     path = PathPlanner().plan([(0.0, 0.0), (100.0, 0.0)])
     traj = TrajPlanner()
+    # 中心距 = 车头 + 障碍半长 + STOP → 净空 = STOP
+    cx = EGO_FRONT_LENGTH + DEFAULT_LEAD_HALF_LENGTH + STOP_DISTANCE
     v = traj.plan(
         _state(x=0.0, y=0.0),
         path,
-        obstacles=[_obs(STOP_DISTANCE, 0.0)],
+        obstacles=[_obs(cx, 0.0)],
     )
     assert v == 0.0
     print("✅ 障碍停车测试通过")
 
 
 def test_traj_ignore_lateral_obstacle():
-    """横向超出 clearance 的障碍不触发减速"""
+    """横向超出 clearance 的障碍不触发减速（垂距）"""
     path = PathPlanner().plan([(0.0, 0.0), (100.0, 0.0)])
     traj = TrajPlanner()
     v = traj.plan(_state(x=0.0, y=0.0), path, obstacles=[_obs(20.0, 10.0)])
     assert abs(v - CRUISE_SPEED) < 1e-9
     print("✅ 旁侧障碍忽略测试通过")
+
+
+def test_traj_bumper_gap_stops_earlier_than_center():
+    """同样中心距下，计入车头后净空更小 → 更早刹停"""
+    from planning.config import DEFAULT_LEAD_HALF_LENGTH, EGO_FRONT_LENGTH
+
+    path = PathPlanner().plan([(0.0, 0.0), (100.0, 0.0)])
+    traj = TrajPlanner()
+    # 中心距刚好让净空 = STOP
+    cx = EGO_FRONT_LENGTH + DEFAULT_LEAD_HALF_LENGTH + STOP_DISTANCE
+    v = traj.plan(_state(x=0.0, y=0.0), path, obstacles=[_obs(cx, 0.0)])
+    assert v == 0.0
+    # 若无车头修正，中心距 cx >> STOP，不应为 0；此处用更大中心距验证仍减速
+    v2 = traj.plan(
+        _state(x=0.0, y=0.0),
+        path,
+        obstacles=[_obs(cx + 8.0, 0.0)],
+    )
+    assert 0.0 < v2 < CRUISE_SPEED
 
 
 def test_traj_slow_near_end():
@@ -117,11 +143,14 @@ def test_traj_short_path_returns_zero():
 
 
 def test_traj_obstacle_closer_slower():
-    """更近的挡路障碍对应更低目标车速"""
+    """更近的挡路障碍对应更低目标车速（中心距含车头修正后仍单调）"""
+    from planning.config import DEFAULT_LEAD_HALF_LENGTH, EGO_FRONT_LENGTH
+
     path = PathPlanner().plan([(0.0, 0.0), (100.0, 0.0)])
     traj = TrajPlanner()
-    mid = 0.5 * (STOP_DISTANCE + SLOW_DISTANCE)
-    near = STOP_DISTANCE + 2.0
+    pad = EGO_FRONT_LENGTH + DEFAULT_LEAD_HALF_LENGTH
+    mid = pad + 0.5 * (STOP_DISTANCE + SLOW_DISTANCE)
+    near = pad + STOP_DISTANCE + 2.0
     v_far = traj.plan(_state(x=0.0, y=0.0), path, obstacles=[_obs(mid, 0.0)])
     v_near = traj.plan(_state(x=0.0, y=0.0), path, obstacles=[_obs(near, 0.0)])
     assert v_near < v_far

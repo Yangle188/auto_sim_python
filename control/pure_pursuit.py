@@ -92,6 +92,118 @@ class PurePursuit:
             float(vehicle_state["x"]), float(vehicle_state["y"]), path, ld
         )
 
+    def get_preview_trajectory(
+        self,
+        vehicle_state: dict,
+        path: List[Tuple[float, float]],
+        n_path: int = 14,
+        n_arc: int = 18,
+    ) -> dict:
+        """
+        可视化用预瞄轨迹：
+        - path_preview: 自车投影点沿参考路径到预瞄点
+        - arc_preview: Pure Pursuit 几何圆弧（当前位姿 → 预瞄点）
+        """
+        empty = {"path_preview": [], "arc_preview": [], "lookahead": None, "ld": 0.0}
+        if not path:
+            return empty
+        x = float(vehicle_state["x"])
+        y = float(vehicle_state["y"])
+        yaw = float(vehicle_state.get("yaw", 0.0) or 0.0)
+        speed = float(vehicle_state.get("speed", 0.0) or 0.0)
+        ld = self._lookahead_distance(speed)
+        target = self._find_lookahead_point(x, y, path, ld)
+        path_preview = self._sample_path_to_lookahead(x, y, path, ld, n_path)
+        arc_preview = self._sample_pp_arc(x, y, yaw, target, n_arc)
+        return {
+            "path_preview": path_preview,
+            "arc_preview": arc_preview,
+            "lookahead": [float(target[0]), float(target[1])],
+            "ld": float(ld),
+        }
+
+    def _sample_path_to_lookahead(
+        self,
+        x: float,
+        y: float,
+        path: List[Tuple[float, float]],
+        ld: float,
+        n: int,
+    ) -> List[List[float]]:
+        if len(path) < 2 or n < 2:
+            return []
+        _, s0, seg_i, t0 = self._project_on_path(x, y, path)
+        target_s = s0 + max(ld, 0.0)
+        # 总弧长上限
+        total = 0.0
+        for i in range(len(path) - 1):
+            total += self._seg_len(path, i)
+        target_s = min(target_s, total)
+        out: List[List[float]] = []
+        for k in range(n):
+            s = s0 + (target_s - s0) * (k / (n - 1))
+            out.append(list(self._point_at_arclength(path, s)))
+        return out
+
+    def _point_at_arclength(
+        self, path: List[Tuple[float, float]], s: float
+    ) -> Tuple[float, float]:
+        if s <= 0.0:
+            return float(path[0][0]), float(path[0][1])
+        cursor = 0.0
+        for i in range(len(path) - 1):
+            seg = self._seg_len(path, i)
+            if cursor + seg >= s - 1e-9:
+                u = 0.0 if seg < 1e-12 else (s - cursor) / seg
+                u = max(0.0, min(1.0, u))
+                x0, y0 = path[i]
+                x1, y1 = path[i + 1]
+                return float(x0 + u * (x1 - x0)), float(y0 + u * (y1 - y0))
+            cursor += seg
+        return float(path[-1][0]), float(path[-1][1])
+
+    def _sample_pp_arc(
+        self,
+        x: float,
+        y: float,
+        yaw: float,
+        target: Tuple[float, float],
+        n: int,
+    ) -> List[List[float]]:
+        """按 PP 曲率画一段圆弧（车体 +x 前、+y 左）。"""
+        if n < 2:
+            return []
+        tx, ty = float(target[0]), float(target[1])
+        dx, dy = tx - x, ty - y
+        c, s = math.cos(yaw), math.sin(yaw)
+        x_r = c * dx + s * dy
+        y_r = -s * dx + c * dy
+        ld = math.hypot(x_r, y_r)
+        if ld < 1e-6 or x_r < 0.0:
+            return [[x, y], [tx, ty]]
+
+        alpha = math.atan2(y_r, x_r)
+        sin_a = math.sin(alpha)
+        if abs(sin_a) < 1e-6:
+            return [
+                [x + (tx - x) * k / (n - 1), y + (ty - y) * k / (n - 1)]
+                for k in range(n)
+            ]
+
+        # kappa = 2 sin(α)/Ld；圆心角 ≈ 2α
+        R = ld / (2.0 * sin_a)
+        dphi = 2.0 * alpha
+        out: List[List[float]] = []
+        for k in range(n):
+            phi = dphi * (k / (n - 1))
+            bx = R * math.sin(phi)
+            by = R * (1.0 - math.cos(phi))
+            wx = x + c * bx - s * by
+            wy = y + s * bx + c * by
+            out.append([float(wx), float(wy)])
+        out[-1] = [tx, ty]
+        return out
+
     def _lookahead_distance(self, speed: float) -> float:
         ld = self.lookahead_gain * max(float(speed), 1.0)
         return max(self.lookahead_min, min(self.lookahead_max, ld))

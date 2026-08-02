@@ -74,6 +74,20 @@ export interface LaneMarking {
   points: Point[];
 }
 
+export interface HmiAlert {
+  level: string;
+  msg: string;
+  code?: string;
+  t?: number;
+}
+
+export interface HmiPayload {
+  ad_state: string;
+  alerts: HmiAlert[];
+  latest?: HmiAlert | null;
+  highest?: string;
+}
+
 export interface Snapshot {
   t: number;
   state: string;
@@ -82,6 +96,11 @@ export interface Snapshot {
   waypoints: Point[];
   path: Point[];
   lookahead: Point | null;
+  /** 沿参考路径到预瞄点 */
+  lookahead_path?: Point[];
+  /** Pure Pursuit 圆弧预瞄轨迹 */
+  preview_traj?: Point[];
+  lookahead_dist?: number;
   lane_width?: number;
   num_lanes?: number;
   lane_left?: Point[];
@@ -101,12 +120,23 @@ export interface Snapshot {
   route_links: RouteLink[];
   session_status?: string;
   view?: { mode?: string };
+  hmi?: HmiPayload;
 }
 
 export interface StatusPayload {
   status: string;
   t: number;
   duration_s: number;
+  frame_i?: number;
+  frame_n?: number;
+  /** 整段 episode 预期帧数（时间轴刻度） */
+  frame_total?: number;
+  scrubbing?: boolean;
+  /** 自动驾驶状态机 */
+  ad_state?: string;
+  ad_engage_pending?: boolean;
+  can_activate?: boolean;
+  can_deactivate?: boolean;
 }
 
 export interface PresetMeta {

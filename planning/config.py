@@ -1,4 +1,6 @@
 # planning/config.py
+from simulator.config import REAR_OVERHANG, VEHICLE_LENGTH
+
 # 路径密化分辨率：相邻密化点弧长间距（m）
 PATH_RESOLUTION = 2.0
 
@@ -8,14 +10,20 @@ CRUISE_SPEED = 10.0
 # 障碍/终点强制接近时的最低目标车速（m/s）
 MIN_SPEED = 1.0
 
-# 障碍纵向距离低于此值时目标车速为 0（m）——紧急刹停
-STOP_DISTANCE = 5.0
+# 车头相对后轴的前向伸出（m）：用于中心距 → 保险杠净空
+EGO_FRONT_LENGTH = VEHICLE_LENGTH - REAR_OVERHANG
 
-# 静态/未知速度障碍：低于此距离开始线性减速（m）
-SLOW_DISTANCE = 25.0
+# 未知尺寸前车/障碍沿路径的半长默认值（m）
+DEFAULT_LEAD_HALF_LENGTH = 1.0
 
-# 本车道横向距离阈值（m）：约半车道，避免邻道误触发
-# 车道宽 3.2m → 半宽 1.6m；略放大容错
+# 保险杠净空低于此值时目标车速为 0（m）——紧急刹停
+STOP_DISTANCE = 2.5
+
+# 静态/未知速度障碍：净空低于此距离开始线性减速（m）
+SLOW_DISTANCE = 28.0
+
+# 本车道横向距离阈值（m）：点到路径折线垂距；约半车道略放大
+# 车道宽 3.2m → 半宽 1.6m
 OBSTACLE_LATERAL_CLEARANCE = 1.8
 
 # 距路径终点小于此弧长时开始线性减速（m）

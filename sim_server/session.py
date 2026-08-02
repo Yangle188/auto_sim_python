@@ -12,7 +12,14 @@ from framework.state_machine import (
     EV_POWER_ON,
     EV_SELF_CHECK_OK,
     EV_ACTIVATE,
+    EV_DEACTIVATE,
     EV_SPEED_OUT_OF_RANGE,
+)
+from hmi.hmi_manager import (
+    CODE_AD_ACTIVATE,
+    CODE_AD_EXIT,
+    CODE_SPEED_LIMIT,
+    CODE_STATE_CHANGE,
 )
 from framework.config import (
     ACTIVE_LOW_SPEED_THRESHOLD,
@@ -100,6 +107,7 @@ class SimSession:
     def start(self) -> None:
         if self.status == "finished":
             self.reset()
+        self._view_i = len(self._frames) - 1 if self._frames else -1
         self.status = "running"
 
     def pause(self) -> None:
@@ -108,6 +116,8 @@ class SimSession:
 
     def resume(self) -> None:
         if self.status == "paused":
+            # 从历史回看恢复时跳回最新帧继续仿真
+            self._view_i = len(self._frames) - 1 if self._frames else -1
             self.status = "running"
 
     def step_once(self) -> Optional[Dict[str, Any]]:
@@ -117,22 +127,207 @@ class SimSession:
         """
         if self.status != "running":
             return None
+        return self._record_advance()
+
+    def seek_frame(self, frame_i: int) -> Optional[Dict[str, Any]]:
+        """跳到历史帧（用于时间轴拖动）；自动暂停。"""
+        if not self._frames:
+            return None
+        self._view_i = max(0, min(len(self._frames) - 1, int(frame_i)))
+        if self.status == "running":
+            self.status = "paused"
+        snap = self._frames[self._view_i]
+        self._last_snapshot = snap
+        return snap
+
+    def request_activate(self) -> Dict[str, Any]:
+        """
+        驾驶员主动请求 STANDBY→ACTIVE。
+        车速已在允许区间则立即切入；否则挂起，待车速满足后再切入。
+        """
+        if self.state_machine.get_state() != STATE_STANDBY:
+            return {
+                "ok": False,
+                "pending": False,
+                "ad_state": self.state_machine.get_state(),
+                "reason": "not_standby",
+            }
+        self._ad_engage_pending = True
+        ok = self._try_engage()
+        if ok:
+            self._sync_ad_state_into_view()
+        return {
+            "ok": ok,
+            "pending": bool(self._ad_engage_pending),
+            "ad_state": self.state_machine.get_state(),
+            "reason": None if ok else "speed_out_of_range",
+        }
+
+    def request_deactivate(self) -> Dict[str, Any]:
+        """驾驶员主动退出 ACTIVE → STANDBY。"""
+        if self.state_machine.get_state() != STATE_ACTIVE:
+            return {
+                "ok": False,
+                "ad_state": self.state_machine.get_state(),
+                "reason": "not_active",
+            }
+        speed = float(self.localizer.get_state().get("speed", 0.0))
+        ok = self.state_machine.transit(EV_DEACTIVATE, vehicle_speed=speed)
+        if ok:
+            self._ad_engage_pending = False
+            self._sync_ad_state_into_view()
+        return {
+            "ok": ok,
+            "ad_state": self.state_machine.get_state(),
+            "reason": None if ok else "transit_failed",
+        }
+
+    def _sync_ad_state_into_view(self) -> None:
+        """激活/退出瞬间同步到当前展示帧（暂停时不会立刻 step）。"""
+        ad = self.state_machine.get_state()
+        hmi = self.hmi.to_payload(ad)
+        if self._frames and 0 <= self._view_i < len(self._frames):
+            fr = dict(self._frames[self._view_i])
+            fr["state"] = ad
+            fr["hmi"] = hmi
+            self._frames[self._view_i] = fr
+            self._last_snapshot = fr
+        elif self._last_snapshot is not None:
+            self._last_snapshot = dict(self._last_snapshot)
+            self._last_snapshot["state"] = ad
+            self._last_snapshot["hmi"] = hmi
+
+    def _try_engage(self) -> bool:
+        if self.state_machine.get_state() != STATE_STANDBY:
+            self._ad_engage_pending = False
+            return False
+        speed = float(self.localizer.get_state().get("speed", 0.0))
+        ok = self.state_machine.transit(EV_ACTIVATE, vehicle_speed=speed)
+        if ok:
+            self._ad_engage_pending = False
+        return ok
+
+    def _publish_hmi(
+        self,
+        msg: str,
+        *,
+        code: str = "",
+        level: str = HMI_INFO,
+    ) -> None:
+        self.event_bus.publish(
+            topic="hmi_alert",
+            data={
+                "level": level,
+                "msg": msg,
+                "code": code,
+                "t": float(self.sim_time),
+            },
+        )
+
+    def _maybe_hmi_speed_limit(self, v_limit: Optional[float]) -> None:
+        """限速变化时推送文言（首帧只记基准，不提示）。"""
+        if not self._prev_v_limit_known:
+            self._prev_v_limit = v_limit
+            self._prev_v_limit_known = True
+            return
+        prev = self._prev_v_limit
+        changed = (prev is None) != (v_limit is None)
+        if not changed and prev is not None and v_limit is not None:
+            changed = abs(float(prev) - float(v_limit)) > 0.05
+        if changed:
+            if v_limit is None:
+                msg = "限速已解除，恢复巡航设定车速"
+            elif prev is None:
+                msg = f"限速切换：当前限速 {float(v_limit):.1f} m/s"
+            else:
+                msg = (
+                    f"限速切换：{float(prev):.1f} → {float(v_limit):.1f} m/s"
+                )
+            self._publish_hmi(msg, code=CODE_SPEED_LIMIT)
+        self._prev_v_limit = v_limit
+
+    def step_frame(self, delta: int) -> Optional[Dict[str, Any]]:
+        """
+        逐帧浏览：delta=-1 上一帧，+1 下一帧。
+        在历史中间只改显示索引；在最新帧再下一步则推进仿真并保持 paused。
+        """
+        if delta == 0:
+            return self.current_snapshot()
+
+        if delta < 0:
+            if not self._frames:
+                return None
+            self._view_i = max(0, (self._view_i if self._view_i >= 0 else 0) - 1)
+            if self.status == "running":
+                self.status = "paused"
+            snap = self._frames[self._view_i]
+            self._last_snapshot = snap
+            return snap
+
+        # delta > 0
+        if self._frames and 0 <= self._view_i < len(self._frames) - 1:
+            self._view_i += 1
+            if self.status == "running":
+                self.status = "paused"
+            snap = self._frames[self._view_i]
+            self._last_snapshot = snap
+            return snap
+
+        # 已在最新帧：单步推进仿真
+        if self.status == "finished":
+            return self.current_snapshot()
+        if self.sim_time >= self.total_sim_time:
+            self.status = "finished"
+            return self.current_snapshot()
+
+        keep_paused = self.status in ("paused", "idle", "finished")
+        prev = self.status
+        self.status = "running"
+        snap = self._record_advance()
+        if keep_paused and self.status == "running":
+            self.status = "paused" if prev != "idle" else "paused"
+        elif keep_paused and self.status == "finished":
+            pass
+        return snap
+
+    def _record_advance(self) -> Optional[Dict[str, Any]]:
         if self.sim_time >= self.total_sim_time:
             self.status = "finished"
             return None
         snap = self._advance_frame()
+        self._frames.append(snap)
+        # 限制历史长度，避免内存膨胀
+        max_frames = 4000
+        if len(self._frames) > max_frames:
+            drop = len(self._frames) - max_frames
+            self._frames = self._frames[drop:]
+        self._view_i = len(self._frames) - 1
         if self.sim_time >= self.total_sim_time:
             self.status = "finished"
         return snap
 
     def current_snapshot(self) -> Optional[Dict[str, Any]]:
+        if self._frames and 0 <= self._view_i < len(self._frames):
+            return self._frames[self._view_i]
         return self._last_snapshot
 
     def status_payload(self) -> Dict[str, Any]:
+        n = len(self._frames)
+        i = self._view_i if n else -1
+        # 整段 episode 预期帧数（时间轴分母）；已录帧 frame_n 可能仍小于它
+        frame_total = max(n, int(math.ceil(self.total_sim_time / max(DT, 1e-9) - 1e-9)))
         return {
             "status": self.status,
-            "t": self.sim_time,
+            "t": float(self._frames[i]["t"]) if 0 <= i < n else self.sim_time,
             "duration_s": self.total_sim_time,
+            "frame_i": i,
+            "frame_n": n,
+            "frame_total": frame_total,
+            "scrubbing": bool(n and i >= 0 and i < n - 1),
+            "ad_state": self.state_machine.get_state(),
+            "ad_engage_pending": bool(self._ad_engage_pending),
+            "can_activate": self.state_machine.get_state() == STATE_STANDBY,
+            "can_deactivate": self.state_machine.get_state() == STATE_ACTIVE,
         }
 
     def _teardown_hmi(self) -> None:
@@ -186,13 +381,15 @@ class SimSession:
                 topic="state_change",
                 data={"old_state": old_state, "new_state": new_state},
             )
-            self.event_bus.publish(
-                topic="hmi_alert",
-                data={
-                    "level": HMI_INFO,
-                    "msg": f"系统状态切换：{old_state} → {new_state}",
-                },
-            )
+            if old_state == STATE_STANDBY and new_state == STATE_ACTIVE:
+                self._publish_hmi("功能已激活", code=CODE_AD_ACTIVATE)
+            elif old_state == STATE_ACTIVE and new_state == STATE_STANDBY:
+                self._publish_hmi("功能已退出", code=CODE_AD_EXIT)
+            else:
+                self._publish_hmi(
+                    f"系统状态切换：{old_state} → {new_state}",
+                    code=CODE_STATE_CHANGE,
+                )
 
         self.state_machine.state_change_callback = on_state_changed
 
@@ -205,9 +402,15 @@ class SimSession:
         self.predictions: list = []
         self.gps_accum = 0.0
         self._last_snapshot: Optional[Dict[str, Any]] = None
+        self._frames: List[Dict[str, Any]] = []
+        self._view_i: int = -1
         self._v_cmd = 0.0
         self._steer = 0.0
         self._v_limit: Optional[float] = None
+        # STANDBY→ACTIVE 需驾驶员主动请求；车速未就绪时挂起，就绪后切入
+        self._ad_engage_pending = False
+        self._prev_v_limit: Optional[float] = None
+        self._prev_v_limit_known = False
 
     def _update_dynamic_obstacles(self) -> None:
         t = self.sim_time
@@ -235,6 +438,8 @@ class SimSession:
                     "y": float(y0),
                     "vx": float((x1 - x0) / max(DT, _ACC_VEL_EPS)),
                     "vy": float((y1 - y0) / max(DT, _ACC_VEL_EPS)),
+                    "width": float(obs.width),
+                    "height": float(obs.height),
                 }
             )
         for obs in self.world.obstacles:
@@ -246,6 +451,8 @@ class SimSession:
                     "y": float(obs.y),
                     "vx": 0.0,
                     "vy": 0.0,
+                    "width": float(obs.width),
+                    "height": float(obs.height),
                 }
             )
         return out
@@ -297,6 +504,7 @@ class SimSession:
         est_state = self.localizer.get_state()
         path = self.path_planner.plan(self.map_mgr.get_waypoints())
         v_limit = self.map_mgr.get_speed_limit_ahead(est_state["x"], est_state["y"])
+        self._maybe_hmi_speed_limit(v_limit)
         acc = 0.0
         steer = 0.0
         state = self.state_machine.get_state()
@@ -351,21 +559,32 @@ class SimSession:
 
         state = self.state_machine.get_state()
         if state == STATE_STANDBY:
-            if current_speed >= ACTIVE_LOW_SPEED_THRESHOLD:
-                self.state_machine.transit(EV_ACTIVATE, vehicle_speed=current_speed)
+            # 不再自动激活：需前端「激活」→ request_activate
+            if self._ad_engage_pending:
+                self._try_engage()
         elif state == STATE_ACTIVE:
-            if not (
-                ACTIVE_LOW_SPEED_THRESHOLD
-                <= current_speed
-                <= ACTIVE_HIGH_SPEED_THRESHOLD
-            ):
+            self._ad_engage_pending = False
+            overspeed = current_speed > ACTIVE_HIGH_SPEED_THRESHOLD
+            # 规划主动减速（跟车/静态刹停/终点）时保持 ACTIVE，避免 ACC 在 5m/s 附近抖回 STANDBY
+            intentional_slow = (
+                v_cmd < ACTIVE_LOW_SPEED_THRESHOLD - 0.5
+                or self.traj_planner.last_lead is not None
+            )
+            underspeed = (
+                current_speed < ACTIVE_LOW_SPEED_THRESHOLD and not intentional_slow
+            )
+            if overspeed or underspeed:
                 self.state_machine.transit(
                     EV_SPEED_OUT_OF_RANGE, vehicle_speed=current_speed
                 )
 
         self.state_machine.step(DT)
 
-        lookahead = self.controller.get_lookahead_point(true_state, path)
+        preview = self.controller.get_preview_trajectory(true_state, path)
+        lookahead = preview.get("lookahead")
+        if lookahead is None:
+            lp = self.controller.get_lookahead_point(true_state, path)
+            lookahead = list(lp) if lp is not None else None
         self._v_cmd = v_cmd
         self._steer = steer
         self._v_limit = v_limit
@@ -378,6 +597,7 @@ class SimSession:
             v_cmd=v_cmd,
             steer=steer,
             v_limit=v_limit,
+            preview=preview,
         )
         self._last_snapshot = snap
         self.sim_time += DT
@@ -388,13 +608,15 @@ class SimSession:
         true_state: dict,
         est_state: dict,
         path: list,
-        lookahead: Optional[Tuple[float, float]],
+        lookahead: Optional[object],
         v_cmd: float,
         steer: float,
         v_limit: Optional[float],
+        preview: Optional[dict] = None,
     ) -> Dict[str, Any]:
         lane = self.world.get_lane_boundaries(path if path else self.world.reference_path)
         lead = self.traj_planner.last_lead
+        preview = preview or {}
         return {
             "t": self.sim_time,
             "state": self.state_machine.get_state(),
@@ -403,6 +625,9 @@ class SimSession:
             "waypoints": [list(p) for p in self.world.reference_path],
             "path": [list(p) for p in path],
             "lookahead": list(lookahead) if lookahead is not None else None,
+            "lookahead_path": list(preview.get("path_preview") or []),
+            "preview_traj": list(preview.get("arc_preview") or []),
+            "lookahead_dist": float(preview.get("ld") or 0.0),
             "lane_width": float(lane["lane_width"]),
             "num_lanes": int(lane.get("num_lanes", 1)),
             "lane_left": [list(p) for p in lane["left"]],
@@ -452,6 +677,7 @@ class SimSession:
             "route_links": self.map_mgr.get_route_links(),
             "session_status": self.status,
             "view": {"mode": "heading_up"},
+            "hmi": self.hmi.to_payload(self.state_machine.get_state()),
         }
 
     def log_line(self, snapshot: Dict[str, Any]) -> str:

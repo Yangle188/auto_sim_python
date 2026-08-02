@@ -5,6 +5,20 @@ from control.pure_pursuit import PurePursuit
 from simulator.vehicle import Vehicle
 
 
+def test_preview_trajectory_has_path_and_arc():
+    from control.pure_pursuit import PurePursuit
+
+    pp = PurePursuit()
+    path = [(0.0, 0.0), (20.0, 0.0), (40.0, 10.0)]
+    prev = pp.get_preview_trajectory(
+        {"x": 2.0, "y": 0.0, "yaw": 0.0, "speed": 8.0}, path
+    )
+    assert prev["lookahead"] is not None
+    assert len(prev["path_preview"]) >= 2
+    assert len(prev["arc_preview"]) >= 2
+    assert prev["ld"] >= 6.0
+
+
 def test_lookahead_interpolates_between_waypoints():
     pp = PurePursuit()
     # 点间距 2m，预瞄 8m → 应落在第 4 段内，而非仅落在离散点上

@@ -6,6 +6,7 @@ import {
   hitObstacle,
   hitWaypoint,
   moveObstacle,
+  moveWaypointWithSeams,
   nearestBaseNode,
   nearestOnPolyline,
   snapCoord,
@@ -311,12 +312,7 @@ export function BirdEyeCanvas({
       const ny = snapCoord(wy);
       const d = draftRef.current;
       if (drag.kind === "waypoint") {
-        const links = d.links.map((l, i) => {
-          if (i !== drag.linkIdx) return l;
-          const points = l.points.map((p, j) => (j === drag.pointIdx ? ([nx, ny] as Point) : p));
-          return { ...l, points };
-        });
-        onChangeDraft({ ...d, links });
+        onChangeDraft(moveWaypointWithSeams(d, drag.linkIdx, drag.pointIdx, nx, ny));
       } else if (drag.kind === "obstacle") {
         const obstacles = d.obstacles.map((o, i) =>
           i === drag.idx ? moveObstacle(o, nx, ny) : o
@@ -587,14 +583,18 @@ export function BirdEyeCanvas({
     const vMin = limits.length ? Math.min(...limits) : 0;
     const vMax = limits.length ? Math.max(...limits) : 1;
 
+    const highlightPlan =
+      (editing && (editTool === "nav" || !!draft.base_map_id)) ||
+      (!editing && !!snapshot?.base_map_id);
     for (let li = 0; li < routeLinks.length; li++) {
       const link = routeLinks[li];
       if (link.points.length < 2) continue;
       const isAux = (link.road_class || "main") === "aux";
       const selected = editing && li === selectedLinkIdx;
-      ctx.strokeStyle = selected ? "#fbbf24" : colorForLimit(link.speed_limit, vMin, vMax);
-      ctx.lineWidth = selected ? 4.2 : isAux ? 2.4 : 3.6;
-      ctx.setLineDash(isAux && !selected ? [8, 5] : []);
+      // 算路结果：金黄加粗高亮导航边
+      ctx.strokeStyle = highlightPlan || selected ? "#fbbf24" : colorForLimit(link.speed_limit, vMin, vMax);
+      ctx.lineWidth = highlightPlan ? (selected ? 5.5 : 4.5) : selected ? 4.2 : isAux ? 2.4 : 3.6;
+      ctx.setLineDash(isAux && !selected && !highlightPlan ? [8, 5] : []);
       ctx.beginPath();
       link.points.forEach(([x, y], i) => {
         const [px, py] = txy(x, y);
@@ -740,13 +740,41 @@ export function BirdEyeCanvas({
         ctx.stroke();
       }
 
+      // 自车预瞄：沿路径虚线 + PP 圆弧实线 + 预瞄点
+      const lookPath = snapshot.lookahead_path;
+      if (lookPath && lookPath.length >= 2) {
+        drawPolyLine(
+          lookPath as [number, number][],
+          "rgba(244,114,182,0.55)",
+          1.6,
+          [4, 4]
+        );
+      }
+      const preview = snapshot.preview_traj;
+      if (preview && preview.length >= 2) {
+        drawPolyLine(preview as [number, number][], "rgba(244,114,182,0.95)", 2.2);
+      }
       if (snapshot.lookahead) {
         const [lx, ly] = snapshot.lookahead;
         const [px, py] = txy(lx, ly);
         ctx.fillStyle = "#f472b6";
+        ctx.strokeStyle = "#831843";
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.arc(px, py, 5, 0, Math.PI * 2);
+        ctx.arc(px, py, 6, 0, Math.PI * 2);
         ctx.fill();
+        ctx.stroke();
+        // 自车 → 预瞄点连线
+        const ego = snapshot.vehicle;
+        const [ex, ey] = txy(ego.x, ego.y);
+        ctx.strokeStyle = "rgba(244,114,182,0.35)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(ex, ey);
+        ctx.lineTo(px, py);
+        ctx.stroke();
+        ctx.setLineDash([]);
       }
 
       const geom = snapshot.vehicle_geom;
@@ -855,12 +883,12 @@ export function BirdEyeCanvas({
 
       const legend = [
         "车道线=世界(道路朝上)",
-        "橙框=自车真值(控制)",
+        "橙框=自车 · 粉线=预瞄轨迹",
         "青点=定位估计",
         "滚轮/右下角缩放",
       ];
       ctx.fillStyle = "rgba(15,20,25,0.72)";
-      ctx.fillRect(12, cssH - 92, 230, 80);
+      ctx.fillRect(12, cssH - 92, 240, 80);
       ctx.fillStyle = "#cbd5e1";
       ctx.font = "500 11px 'DM Sans', 'PingFang SC', sans-serif";
       legend.forEach((line, i) => ctx.fillText(line, 22, cssH - 72 + i * 16));

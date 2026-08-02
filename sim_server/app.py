@@ -32,7 +32,18 @@ _loop_task: asyncio.Task | None = None
 
 
 class ControlBody(BaseModel):
-    action: Literal["start", "pause", "resume", "reset"]
+    action: Literal[
+        "start",
+        "pause",
+        "resume",
+        "reset",
+        "step_prev",
+        "step_next",
+        "seek",
+        "activate",
+        "deactivate",
+    ]
+    frame_i: int | None = None
 
 
 class RoutePlanBody(BaseModel):
@@ -208,6 +219,7 @@ async def put_scene(body: SceneConfig) -> Dict[str, Any]:
 @app.post("/api/control")
 async def control(body: ControlBody) -> Dict[str, Any]:
     async with _lock:
+        snap = None
         if body.action == "start":
             _session.start()
         elif body.action == "pause":
@@ -216,8 +228,26 @@ async def control(body: ControlBody) -> Dict[str, Any]:
             _session.resume()
         elif body.action == "reset":
             _session.reset()
+        elif body.action == "step_prev":
+            snap = _session.step_frame(-1)
+        elif body.action == "step_next":
+            snap = _session.step_frame(+1)
+        elif body.action == "seek":
+            if body.frame_i is None:
+                raise HTTPException(status_code=400, detail="seek 需要 frame_i")
+            snap = _session.seek_frame(body.frame_i)
+        elif body.action == "activate":
+            _session.request_activate()
+            snap = _session.current_snapshot()
+        elif body.action == "deactivate":
+            _session.request_deactivate()
+            snap = _session.current_snapshot()
         _ensure_loop()
-        return {"ok": True, "status": _session.status_payload()}
+        status = _session.status_payload()
+    if snap is not None:
+        await _broadcast({"type": "frame", "data": snap})
+    await _broadcast({"type": "status", "data": status})
+    return {"ok": True, "status": status, "frame": snap}
 
 
 @app.websocket("/ws/sim")

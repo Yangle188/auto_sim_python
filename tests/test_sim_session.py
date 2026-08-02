@@ -169,10 +169,149 @@ def test_session_spawns_along_route_heading():
     assert sess._network_lane_markings
 
 
+def test_session_seek_frame_and_preview_in_snapshot():
+    scene = SceneConfig(
+        route_id="seek_preview",
+        links=[
+            RouteLinkIn(
+                link_id="L1",
+                points=[(0.0, 0.0), (80.0, 0.0)],
+                speed_limit=10.0,
+            )
+        ],
+        obstacles=[],
+        duration_s=12.0,
+    )
+    sess = SimSession(scene)
+    sess.start()
+    for _ in range(15):
+        snap = sess.step_once()
+        assert snap is not None
+    assert snap.get("preview_traj")
+    assert snap.get("lookahead_path")
+    mid = sess.seek_frame(5)
+    assert mid is not None
+    assert sess.status == "paused"
+    assert sess.status_payload()["frame_i"] == 5
+    assert sess.status_payload()["scrubbing"] is True
+    st = sess.status_payload()
+    assert st["frame_total"] >= st["frame_n"]
+    assert st["frame_i"] < st["frame_total"] - 1  # 中途时进度条不应贴末端
+
+
+def test_session_step_prev_next_frames():
+    """暂停后可上一帧回看、下一帧单步推进。"""
+    scene = SceneConfig(
+        route_id="step_frames",
+        links=[
+            RouteLinkIn(
+                link_id="L1",
+                points=[(0.0, 0.0), (80.0, 0.0)],
+                speed_limit=10.0,
+            )
+        ],
+        obstacles=[],
+        duration_s=15.0,
+    )
+    sess = SimSession(scene)
+    sess.start()
+    for _ in range(10):
+        assert sess.step_once() is not None
+    assert sess.status_payload()["frame_n"] == 10
+    sess.pause()
+    t_tip = sess.current_snapshot()["t"]
+    prev = sess.step_frame(-1)
+    assert prev is not None
+    assert prev["t"] < t_tip
+    assert sess.status_payload()["scrubbing"] is True
+    nxt = sess.step_frame(+1)
+    assert nxt is not None
+    assert nxt["t"] == pytest.approx(t_tip)
+    # 在最新帧再下一步：推进仿真且保持 paused
+    advanced = sess.step_frame(+1)
+    assert advanced is not None
+    assert advanced["t"] > t_tip
+    assert sess.status == "paused"
+    assert sess.status_payload()["frame_n"] == 11
+
+
+def test_session_manual_activate_required():
+    """STANDBY→ACTIVE 不再自动，需 request_activate。"""
+    scene = SceneConfig(
+        route_id="manual_activate",
+        links=[
+            RouteLinkIn(
+                link_id="L1",
+                points=[(0.0, 0.0), (120.0, 0.0)],
+                speed_limit=12.0,
+            )
+        ],
+        obstacles=[],
+        duration_s=20.0,
+    )
+    sess = SimSession(scene)
+    sess.start()
+    reached_standby_fast = False
+    for _ in range(400):
+        snap = sess.step_once()
+        assert snap is not None
+        assert snap["state"] != "ACTIVE"
+        if snap["state"] == "STANDBY" and snap["vehicle"]["speed"] >= 5.0:
+            reached_standby_fast = True
+            break
+    assert reached_standby_fast
+    assert sess.status_payload()["can_activate"] is True
+    res = sess.request_activate()
+    assert res["ok"] is True
+    assert sess.state_machine.get_state() == "ACTIVE"
+    snap = sess.step_once()
+    assert snap is not None
+    assert snap["state"] == "ACTIVE"
+
+
+def test_session_stays_active_while_braking_for_obstacle():
+    """跟车/静态刹停导致车速 <5m/s 时不应掉回 STANDBY。"""
+    scene = SceneConfig(
+        route_id="brake_keep_active",
+        links=[
+            RouteLinkIn(
+                link_id="L1",
+                points=[(0.0, 0.0), (120.0, 0.0)],
+                speed_limit=12.0,
+            )
+        ],
+        # 障碍放远些，先加速再手动激活，再制动
+        obstacles=[ObstacleIn(x=70.0, y=0.0, width=2.0, height=2.0)],
+        duration_s=35.0,
+    )
+    sess = SimSession(scene)
+    sess.start()
+    saw_active = False
+    stayed_active_while_slow = False
+    for _ in range(1200):
+        snap = sess.step_once()
+        if snap is None:
+            break
+        if (
+            snap["state"] == "STANDBY"
+            and snap["vehicle"]["speed"] >= 5.0
+            and not saw_active
+        ):
+            assert sess.request_activate()["ok"] is True
+        if snap["state"] == "ACTIVE":
+            saw_active = True
+            if snap["vehicle"]["speed"] < 4.0 and snap["v_cmd"] < 4.0:
+                stayed_active_while_slow = True
+                break
+        if snap["state"] == "STANDBY" and saw_active and snap["vehicle"]["x"] > 20.0:
+            if snap["v_cmd"] < 4.0:
+                pytest.fail("ACC/静态制动时不应因低速掉回 STANDBY")
+    assert saw_active
+    assert stayed_active_while_slow
+
+
 def test_session_brakes_for_static_obstacle_on_path():
     """画布静态障碍应作为真值 lead(v=0) 触发减速，而非直接撞上。"""
-    from sim_server.scene_schema import RouteLinkIn
-
     scene = SceneConfig(
         route_id="brake_static",
         links=[

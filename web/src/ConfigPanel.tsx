@@ -17,6 +17,8 @@ interface Props {
   onSelectLink: (idx: number) => void;
   selectedObstacleIdx: number | null;
   onSelectObstacle: (idx: number | null) => void;
+  keepObstaclesOnNav: boolean;
+  onKeepObstaclesOnNav: (v: boolean) => void;
 }
 
 function pointsToText(points: [number, number][]): string {
@@ -54,6 +56,8 @@ export function ConfigPanel({
   onSelectLink,
   selectedObstacleIdx,
   onSelectObstacle,
+  keepObstaclesOnNav,
+  onKeepObstaclesOnNav,
 }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [showCoords, setShowCoords] = useState(false);
@@ -147,6 +151,7 @@ export function ConfigPanel({
         links: data.links,
         obstacles: data.obstacles || [],
         duration_s: data.duration_s || 20,
+        base_map_id: data.base_map_id ?? null,
       });
     } catch (e) {
       setImportError(String((e as Error).message || e));
@@ -192,11 +197,21 @@ export function ConfigPanel({
           {editTool === "none"
             ? "浏览运行画面。改场景：算路 / 编路线 / 放障碍。"
             : editTool === "nav"
-              ? "底图上依次点选起点、终点节点，自动最短路并写入草稿。"
+              ? "底图上依次点选起点、终点节点，自动最短路并高亮写入草稿。"
               : editTool === "route"
                 ? "画布点选追加/插入路点，拖拽移动；面板改路段属性。"
                 : "画布点击空白放置障碍，拖拽改位置；Delete 删除选中。"}
         </p>
+        {editTool === "nav" && (
+          <label className="check keep-obs">
+            <input
+              type="checkbox"
+              checked={keepObstaclesOnNav}
+              onChange={(e) => onKeepObstaclesOnNav(e.target.checked)}
+            />
+            算路时保留当前障碍
+          </label>
+        )}
       </section>
 
       <section className="block">

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { BirdEyeCanvas } from "./BirdEyeCanvas";
 import { ConfigPanel } from "./ConfigPanel";
+import { HmiPanel } from "./HmiPanel";
+import { Timeline } from "./Timeline";
 import {
   fetchBasemap,
   fetchPresets,
@@ -9,10 +11,17 @@ import {
   postRoutePlan,
   putScene,
   simWsUrl,
+  type ControlAction,
 } from "./api";
-import { statusZh } from "./labels";
+import { adStateZh, statusZh } from "./labels";
 import type { EditTool } from "./sceneEdit";
-import type { BaseMapData, PresetMeta, SceneConfig, Snapshot, StatusPayload } from "./types";
+import type {
+  BaseMapData,
+  PresetMeta,
+  SceneConfig,
+  Snapshot,
+  StatusPayload,
+} from "./types";
 
 const EMPTY: SceneConfig = {
   route_id: "custom",
@@ -52,6 +61,7 @@ export default function App() {
   const [baseMap, setBaseMap] = useState<BaseMapData | null>(null);
   const [navStart, setNavStart] = useState<string | null>(null);
   const [navEnd, setNavEnd] = useState<string | null>(null);
+  const [keepObstaclesOnNav, setKeepObstaclesOnNav] = useState(false);
 
   useEffect(() => {
     Promise.all([fetchScene(), fetchPresets(), fetchBasemap()])
@@ -97,27 +107,60 @@ export default function App() {
     };
   }, []);
 
-  const runControl = useCallback(async (action: "start" | "pause" | "resume" | "reset") => {
-    setBusy(true);
-    setError(null);
-    try {
-      const st = await postControl(action);
-      setStatus(st);
-      if (action === "reset") setSnapshot(null);
-    } catch (e) {
-      setError(String((e as Error).message || e));
-    } finally {
-      setBusy(false);
-    }
-  }, []);
+  const runControl = useCallback(
+    async (action: ControlAction, extra?: { frame_i?: number }) => {
+      setBusy(true);
+      setError(null);
+      try {
+        if (action === "start" || action === "reset") {
+          await putScene(draft);
+          if (action === "start") {
+            await postControl("reset");
+          }
+        }
+        const res = await postControl(action === "start" ? "start" : action, extra);
+        setStatus(res.status);
+        if (res.frame) setSnapshot(res.frame as Snapshot);
+        if (action === "reset" || action === "start") {
+          if (action === "reset") setSnapshot(null);
+          if (action === "start") setEditTool("none");
+        }
+      } catch (e) {
+        setError(String((e as Error).message || e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [draft]
+  );
+
+  const onSeek = useCallback(
+    (frameI: number) => {
+      void runControl("seek", { frame_i: frameI });
+    },
+    [runControl]
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
       if (e.code === "Space") {
         e.preventDefault();
         if (status.status === "running") runControl("pause");
         else if (status.status === "paused") runControl("resume");
         else runControl("start");
+        return;
+      }
+      if (e.code === "ArrowLeft") {
+        e.preventDefault();
+        runControl("step_prev");
+        return;
+      }
+      if (e.code === "ArrowRight") {
+        e.preventDefault();
+        runControl("step_next");
       }
     };
     window.addEventListener("keydown", onKey);
@@ -130,8 +173,8 @@ export default function App() {
     try {
       await putScene(draft);
       await postControl("reset");
-      const st = await postControl("start");
-      setStatus(st);
+      const res = await postControl("start");
+      setStatus(res.status);
       setSnapshot(null);
       setEditTool("none");
     } catch (e) {
@@ -173,11 +216,11 @@ export default function App() {
           start_node: navStart,
           end_node: nodeId,
           duration_s: draft.duration_s,
-          clear_obstacles: true,
+          clear_obstacles: !keepObstaclesOnNav,
         });
         setDraft(res.draft);
         setSelectedLinkIdx(0);
-        setSelectedObstacleIdx(null);
+        setSelectedObstacleIdx(res.draft.obstacles.length ? 0 : null);
       } catch (e) {
         setError(String((e as Error).message || e));
         setNavEnd(null);
@@ -185,10 +228,42 @@ export default function App() {
         setBusy(false);
       }
     },
-    [navStart, navEnd, draft.duration_s]
+    [navStart, navEnd, draft.duration_s, keepObstaclesOnNav]
   );
 
   const paused = status.status === "paused";
+  const frameI = status.frame_i ?? -1;
+  const frameN = status.frame_n ?? 0;
+  const frameTotal = status.frame_total ?? frameN;
+  const canStep = !busy && editTool === "none";
+  const adState = status.ad_state ?? snapshot?.state ?? "";
+  const canActivate =
+    status.can_activate ??
+    (adState === "STANDBY" &&
+      (status.status === "running" || status.status === "paused"));
+  const canDeactivate =
+    status.can_deactivate ??
+    (adState === "ACTIVE" &&
+      (status.status === "running" || status.status === "paused"));
+  const activateDisabled =
+    busy ||
+    !canActivate ||
+    status.status === "idle" ||
+    status.status === "finished";
+  const deactivateDisabled =
+    busy ||
+    !canDeactivate ||
+    status.status === "idle" ||
+    status.status === "finished";
+  const activateTitle = status.ad_engage_pending
+    ? "已请求激活，等待车速进入允许区间（约 5–30 m/s）"
+    : activateDisabled
+      ? status.status === "idle"
+        ? "请先点「开始」"
+        : adState && adState !== "STANDBY"
+          ? `当前 AD 为「${adStateZh(adState)}」，需进入待机(STANDBY)后才能激活（约 t≥2.5s）`
+          : "当前不可激活"
+      : "STANDBY → ACTIVE（车速未就绪时会挂起，达速后自动切入）";
 
   return (
     <div className="app">
@@ -225,6 +300,42 @@ export default function App() {
           <button
             type="button"
             className="btn"
+            disabled={!canStep || frameN <= 0 || frameI <= 0}
+            onClick={() => runControl("step_prev")}
+            title="上一帧（←）"
+          >
+            上一帧
+          </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={!canStep || status.status === "running"}
+            onClick={() => runControl("step_next")}
+            title="下一帧（→）；在最新帧时单步推进"
+          >
+            下一帧
+          </button>
+          <button
+            type="button"
+            className="btn accent"
+            disabled={activateDisabled}
+            onClick={() => runControl("activate")}
+            title={activateTitle}
+          >
+            {status.ad_engage_pending ? "激活中…" : "激活"}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={deactivateDisabled}
+            onClick={() => runControl("deactivate")}
+            title="ACTIVE → STANDBY，功能退出"
+          >
+            退出
+          </button>
+          <button
+            type="button"
+            className="btn"
             disabled={busy}
             onClick={() => runControl("reset")}
           >
@@ -234,29 +345,52 @@ export default function App() {
         <div className="meta">
           <span className={wsOk ? "dot on" : "dot"} />
           <span>
-            {statusZh(status.status)} · t={status.t.toFixed(2)}/{status.duration_s.toFixed(0)}s
+            {statusZh(status.status)}
+            {adState ? ` · AD ${adStateZh(adState)}` : ""}
+            {status.ad_engage_pending ? " · 待激活" : ""}
+            {status.scrubbing ? " · 回看" : ""} · t={status.t.toFixed(2)}/
+            {status.duration_s.toFixed(0)}s
+            {frameN > 0 ? ` · 帧 ${Math.max(0, frameI) + 1}/${frameN}` : ""}
           </span>
-          <span className="hint-key">空格键 = 开始/暂停</span>
+          <span className="hint-key">空格=开始/暂停 · ←/→=逐帧 · 达速后点「激活」</span>
         </div>
       </header>
 
+      <Timeline
+        frameI={frameI}
+        frameN={frameN}
+        frameTotal={frameTotal}
+        t={status.t}
+        durationS={status.duration_s}
+        scrubbing={!!status.scrubbing}
+        disabled={!canStep}
+        onSeek={onSeek}
+      />
+
       <main className="main">
         <section className="stage">
-          <BirdEyeCanvas
-            snapshot={snapshot}
-            paused={paused}
-            draft={draft}
-            editTool={editTool}
-            selectedLinkIdx={selectedLinkIdx}
-            selectedObstacleIdx={selectedObstacleIdx}
-            onChangeDraft={setDraft}
-            onSelectLink={setSelectedLinkIdx}
-            onSelectObstacle={setSelectedObstacleIdx}
-            baseMap={baseMap}
-            navStart={navStart}
-            navEnd={navEnd}
-            onNavPick={onNavPick}
-          />
+          <div className="stage-with-hmi">
+            <BirdEyeCanvas
+              snapshot={snapshot}
+              paused={paused || !!status.scrubbing}
+              draft={draft}
+              editTool={editTool}
+              selectedLinkIdx={selectedLinkIdx}
+              selectedObstacleIdx={selectedObstacleIdx}
+              onChangeDraft={setDraft}
+              onSelectLink={setSelectedLinkIdx}
+              onSelectObstacle={setSelectedObstacleIdx}
+              baseMap={baseMap}
+              navStart={navStart}
+              navEnd={navEnd}
+              onNavPick={onNavPick}
+            />
+            <HmiPanel
+              adState={adState}
+              hmi={snapshot?.hmi}
+              engagePending={!!status.ad_engage_pending}
+            />
+          </div>
         </section>
         <ConfigPanel
           draft={draft}
@@ -272,6 +406,8 @@ export default function App() {
           onSelectLink={setSelectedLinkIdx}
           selectedObstacleIdx={selectedObstacleIdx}
           onSelectObstacle={setSelectedObstacleIdx}
+          keepObstaclesOnNav={keepObstaclesOnNav}
+          onKeepObstaclesOnNav={setKeepObstaclesOnNav}
         />
       </main>
     </div>

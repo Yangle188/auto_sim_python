@@ -110,7 +110,8 @@ def _run_npm(npm: str, args: list[str], env: dict) -> None:
     bin_dir = _node_bin_dir(npm)
     node = bin_dir / "node"
     npm_cli = Path(npm).resolve()
-    if node.is_file() and npm_cli.is_file():
+    # 仅当 resolve 后是 JS 入口时用 node 执行；bash wrapper（部分 Homebrew）走原命令
+    if node.is_file() and npm_cli.is_file() and npm_cli.suffix == ".js":
         subprocess.check_call([str(node), str(npm_cli), *args], cwd=WEB, env=env)
         return
     subprocess.check_call([npm, *args], cwd=WEB, env=env)

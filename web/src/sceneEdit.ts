@@ -145,14 +145,54 @@ export function hitObstacle(
 }
 
 export function moveObstacle(o: ObstacleIn, x: number, y: number): ObstacleIn {
+  const dx = x - o.x;
+  const dy = y - o.y;
   const next: ObstacleIn = { ...o, x, y };
   if (next.motion?.type === "linear") {
     next.motion = { ...next.motion, x0: x, y0: y };
   } else if (next.motion?.type === "scripted" && next.motion.keyframes.length > 0) {
-    const kfs = next.motion.keyframes.map((k, i) => (i === 0 ? { ...k, x, y } : k));
+    // 整体平移全部关键帧，保持 cut-in/out 相对轨迹
+    const kfs = next.motion.keyframes.map((k) => ({
+      ...k,
+      x: k.x + dx,
+      y: k.y + dy,
+    }));
     next.motion = { ...next.motion, keyframes: kfs };
   }
   return next;
+}
+
+/** 拖拽路点时同步相邻路段共享端点，避免 Apply 时衔接校验失败 */
+export function moveWaypointWithSeams(
+  draft: SceneConfig,
+  linkIdx: number,
+  pointIdx: number,
+  x: number,
+  y: number
+): SceneConfig {
+  const links = draft.links.map((l, i) => {
+    if (i !== linkIdx) return l;
+    const points = l.points.map((p, j) => (j === pointIdx ? ([x, y] as Point) : p));
+    return { ...l, points };
+  });
+  const cur = links[linkIdx];
+  if (!cur) return { ...draft, links };
+
+  // 起点 ↔ 上一段终点
+  if (pointIdx === 0 && linkIdx > 0) {
+    const prev = links[linkIdx - 1];
+    const pts = [...prev.points];
+    pts[pts.length - 1] = [x, y];
+    links[linkIdx - 1] = { ...prev, points: pts };
+  }
+  // 终点 ↔ 下一段起点
+  if (pointIdx === cur.points.length - 1 && linkIdx < links.length - 1) {
+    const nxt = links[linkIdx + 1];
+    const pts = [...nxt.points];
+    pts[0] = [x, y];
+    links[linkIdx + 1] = { ...nxt, points: pts };
+  }
+  return { ...draft, links };
 }
 
 export function snapCoord(v: number, step = 0.5): number {
