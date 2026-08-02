@@ -137,9 +137,8 @@ class TrajPlanner:
         best_d = float("inf")
         best: Optional[Tuple[float, float, str]] = None
 
-        # 1) 显式 leads（仿真动态障碍真值速度）优先；
-        #    若调用方提供了 leads，则不再用嘈杂感知做 ACC 兜底（切出后保持无前车）
-        use_leads_only = bool(leads)
+        # 1) 显式 leads（仿真真值：动态前车 + 静态 v=0）优先
+        has_leads = bool(leads)
         for lead in leads:
             if isinstance(lead, dict):
                 ox = lead.get("x")
@@ -164,7 +163,9 @@ class TrajPlanner:
                 best_d = d_gap
                 best = (d_gap, v_lead, tag)
 
-        if use_leads_only:
+        # 有 leads 时不再吃感知/预测（避免 cut-out 后噪声误跟）。
+        # 静态画布障碍应由调用方一并放进 leads（v=0），见 SimSession._truth_leads。
+        if has_leads:
             return best
 
         # 2) 预测轨
@@ -182,7 +183,7 @@ class TrajPlanner:
         if best is not None:
             return best
 
-        # 3) 静止/未知速度障碍兜底
+        # 3) 静止/未知速度障碍兜底（无 leads 时）
         for obs in obstacles:
             ox = getattr(obs, "x", None)
             oy = getattr(obs, "y", None)

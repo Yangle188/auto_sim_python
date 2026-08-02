@@ -1,4 +1,4 @@
-import type { PresetMeta, SceneConfig, StatusPayload } from "./types";
+import type { BaseMapData, PresetMeta, SceneConfig, StatusPayload } from "./types";
 
 async function jsonOrThrow(res: Response) {
   if (!res.ok) {
@@ -56,4 +56,31 @@ export async function postControl(
 export function simWsUrl(): string {
   const proto = window.location.protocol === "https:" ? "wss" : "ws";
   return `${proto}://${window.location.host}/ws/sim`;
+}
+
+export async function fetchBasemap(): Promise<BaseMapData> {
+  return jsonOrThrow(await fetch("/api/basemap"));
+}
+
+export async function postRoutePlan(body: {
+  start_node?: string;
+  end_node?: string;
+  start?: [number, number];
+  end?: [number, number];
+  duration_s?: number;
+  clear_obstacles?: boolean;
+}): Promise<{
+  ok: boolean;
+  length_m: number;
+  draft: SceneConfig;
+  start_node: string | null;
+  end_node: string | null;
+}> {
+  return jsonOrThrow(
+    await fetch("/api/route/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+  );
 }

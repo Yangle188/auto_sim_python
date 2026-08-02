@@ -58,16 +58,21 @@ PythonProject/
 - **visualize** — matplotlib 鸟瞰（车头向上、三车道）：车辆、路径、预瞄、障碍、ACC HUD
 - **localization** — 4 状态 EKF（里程计预测 + 含噪 GPS）；规划/控制吃估计位姿，感知吃真值
 - **prediction** — 融合检测最近邻跟踪 + 恒速短时预测，供 TrajPlanner 前瞻减速
-- **map** — Route/Link 路线下发与限速查询；`main` 下发演示路线，纵向规划吃 `speed_limit`
-- **sim_server / web** — WebSocket 实时鸟瞰（车头向上、三车道）+ 场景配置；默认预设「跟车/Cut-in/Cut-out」
+- **map** — Route/Link 限速路线；教学底图 + 起终点最短路算路并下发导航
+- **sim_server / web** — 实时鸟瞰 + 画布编路线/放障碍/底图算路；默认预设「跟车/Cut-in/Cut-out」
 
-## 规划中模块
+## 规划中 / 下一步
 
-主栈模块已按 `scaffold_config.json` 落地；后续以打磨（绕障、\(L_d(v)\)、录帧等）为主。
+主栈模块已按 `scaffold_config.json` 落地。近期优先（见 `HANDOFF.md`）：
+
+1. 算路体验打磨（边高亮、多底图、转弯注解）  
+2. Web 脚本障碍简易编辑  
 
 ## 文档
 
 - [HANDOFF.md](HANDOFF.md) — 交接与继续开发指引（**明天先读**）
+- [docs/SUMMARY_2026-08-02_daily.md](docs/SUMMARY_2026-08-02_daily.md) — 2026-08-02 收工总览
+- [docs/SUMMARY_2026-08-01_acc_viz.md](docs/SUMMARY_2026-08-01_acc_viz.md) — ACC / 三车道 / 鸟瞰
 - [docs/SUMMARY_2026-08-01_daily.md](docs/SUMMARY_2026-08-01_daily.md) — 2026-08-01 日收工总览
 - [docs/SUMMARY_2026-08-01_web_viz.md](docs/SUMMARY_2026-08-01_web_viz.md) — Web 实时渲染与场景配置
 - [docs/SUMMARY_2026-08-01_simulator.md](docs/SUMMARY_2026-08-01_simulator.md) — 车道/后轴几何

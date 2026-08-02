@@ -91,6 +91,8 @@ class SceneConfig(BaseModel):
     links: List[RouteLinkIn]
     obstacles: List[ObstacleIn] = Field(default_factory=list)
     duration_s: float = 40.0
+    # 非空时 snapshot 附带该底图全网车道线（导航 Route 仍只含选中路径）
+    base_map_id: Optional[str] = None
 
     @field_validator("duration_s")
     @classmethod
@@ -135,6 +137,11 @@ def _route_to_links(route: Route) -> List[RouteLinkIn]:
             )
         )
     return out
+
+
+def route_to_scene_links(route: Route) -> List[RouteLinkIn]:
+    """公开：Route → SceneConfig.links。"""
+    return _route_to_links(route)
 
 
 def evaluate_motion(motion: Motion, t: float) -> Tuple[float, float]:

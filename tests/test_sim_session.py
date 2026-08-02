@@ -1,4 +1,6 @@
 # tests/test_sim_session.py
+import math
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -137,3 +139,105 @@ def test_session_snapshot_has_multilane_and_heading_up():
 def test_dynamic_obstacle_requires_motion():
     with pytest.raises(Exception):
         ObstacleIn(x=0, y=0, dynamic=True, motion=None)
+
+
+def test_session_spawns_along_route_heading():
+    """导航竖向路段时自车初始航向应沿首段，避免切角冲出车道。"""
+    scene = SceneConfig(
+        route_id="campus_grid_N7_N1",
+        base_map_id="campus_grid",
+        links=[
+            RouteLinkIn(
+                link_id="N7_N4",
+                points=[(0.0, 0.0), (0.0, 40.0)],
+                speed_limit=12.0,
+            ),
+            RouteLinkIn(
+                link_id="N4_N1",
+                points=[(0.0, 40.0), (0.0, 80.0)],
+                speed_limit=12.0,
+            ),
+        ],
+        obstacles=[],
+        duration_s=20.0,
+    )
+    sess = SimSession(scene)
+    st = sess.world.vehicle.get_state()
+    assert st["x"] == pytest.approx(0.0)
+    assert st["y"] == pytest.approx(0.0)
+    assert st["yaw"] == pytest.approx(math.pi / 2, abs=1e-3)
+    assert sess._network_lane_markings
+
+
+def test_session_brakes_for_static_obstacle_on_path():
+    """画布静态障碍应作为真值 lead(v=0) 触发减速，而非直接撞上。"""
+    from sim_server.scene_schema import RouteLinkIn
+
+    scene = SceneConfig(
+        route_id="brake_static",
+        links=[
+            RouteLinkIn(
+                link_id="L1",
+                points=[(0.0, 0.0), (100.0, 0.0)],
+                speed_limit=10.0,
+            )
+        ],
+        obstacles=[ObstacleIn(x=30.0, y=0.0, width=2.0, height=2.0)],
+        duration_s=25.0,
+    )
+    sess = SimSession(scene)
+    sess.start()
+    saw_slow = False
+    for _ in range(400):
+        snap = sess.step_once()
+        if snap is None:
+            break
+        if snap["vehicle"]["x"] > 8.0 and snap["v_cmd"] < 4.0:
+            saw_slow = True
+            break
+        # 不应冲过障碍中心仍高速
+        if snap["vehicle"]["x"] > 28.0 and snap["vehicle"]["speed"] > 6.0:
+            pytest.fail("未制动：已接近静态障碍仍保持高速")
+    assert saw_slow, "接近路径上静态障碍时应降低 v_cmd"
+
+
+def test_api_basemap_and_route_plan():
+    client = TestClient(app)
+    r = client.get("/api/basemap")
+    assert r.status_code == 200
+    bm = r.json()
+    assert bm["map_id"] == "campus_grid"
+    assert len(bm["nodes"]) == 9
+    assert len(bm["edges"]) == 24
+
+    r = client.post(
+        "/api/route/plan",
+        json={"start_node": "N7", "end_node": "N3", "duration_s": 25.0},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["length_m"] == pytest.approx(160.0)
+    assert body["draft"]["route_id"].endswith("N7_N3")
+    assert len(body["draft"]["links"]) == 4
+    assert body["draft"]["base_map_id"] == "campus_grid"
+    assert bm.get("lane_markings")
+
+    r = client.get("/api/scene")
+    assert r.json()["draft"]["route_id"] == body["draft"]["route_id"]
+
+    from sim_server.session import SimSession
+    from sim_server.scene_schema import SceneConfig
+
+    sess = SimSession(SceneConfig.model_validate(body["draft"]))
+    sess.start()
+    snap = sess.step_once()
+    assert snap is not None
+    assert snap.get("network_lane_markings")
+    assert len(snap["network_lane_markings"]) >= 24
+
+    r = client.post(
+        "/api/route/plan",
+        json={"start_node": "N5", "end_node": "N5"},
+    )
+    assert r.status_code == 400

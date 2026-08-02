@@ -71,11 +71,49 @@ def _which_npm() -> str | None:
     return None
 
 
+def _node_bin_dir(npm: str) -> Path:
+    """
+    找到与 npm 配套的 bin 目录（内含 node）。
+
+    注意：不要对 npm 路径盲目 resolve()——便携安装里 npm 常是指向
+    lib/node_modules/npm/bin/npm-cli.js 的符号链接，resolve 后的目录没有 node，
+    会导致 `#!/usr/bin/env node` 报 No such file or directory。
+    """
+    npm_path = Path(npm)
+    candidates = [npm_path.parent]
+    try:
+        resolved = npm_path.resolve()
+        candidates.append(resolved.parent)
+        # .../lib/node_modules/npm/bin/npm-cli.js → .../bin
+        for parent in resolved.parents:
+            bin_dir = parent / "bin"
+            if (bin_dir / "node").is_file():
+                candidates.append(bin_dir)
+                break
+    except OSError:
+        pass
+    for d in candidates:
+        if (d / "node").is_file():
+            return d
+    return npm_path.parent
+
+
 def _npm_env(npm: str) -> dict:
     env = os.environ.copy()
-    npm_bin = str(Path(npm).resolve().parent)
-    env["PATH"] = npm_bin + os.pathsep + env.get("PATH", "")
+    bin_dir = str(_node_bin_dir(npm))
+    env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
     return env
+
+
+def _run_npm(npm: str, args: list[str], env: dict) -> None:
+    """优先用同目录 node 直接跑 npm-cli.js，避免依赖 PATH 里的 env node。"""
+    bin_dir = _node_bin_dir(npm)
+    node = bin_dir / "node"
+    npm_cli = Path(npm).resolve()
+    if node.is_file() and npm_cli.is_file():
+        subprocess.check_call([str(node), str(npm_cli), *args], cwd=WEB, env=env)
+        return
+    subprocess.check_call([npm, *args], cwd=WEB, env=env)
 
 
 def ensure_web_build(rebuild: bool) -> None:
@@ -99,9 +137,9 @@ def ensure_web_build(rebuild: bool) -> None:
     env = _npm_env(npm)
     if not (WEB / "node_modules").is_dir():
         print("[run_web] npm install …")
-        subprocess.check_call([npm, "install"], cwd=WEB, env=env)
+        _run_npm(npm, ["install"], env)
     print("[run_web] npm run build …")
-    subprocess.check_call([npm, "run", "build"], cwd=WEB, env=env)
+    _run_npm(npm, ["run", "build"], env)
     if not DIST_INDEX.is_file():
         print("[run_web] 错误: build 完成但未找到 web/dist/index.html")
         sys.exit(1)

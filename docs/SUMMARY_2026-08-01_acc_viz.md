@@ -37,8 +37,13 @@
 ## 验证
 
 ```bash
-pytest   # 103 passed
+pytest   # 107 passed（以当前仓库为准）
 python run_web.py --rebuild
 ```
 
 预设选「三车道：跟车 / Cut-in / Cut-out」，观察 HUD 的 ACC 行与目标车速变化。
+
+## 后续修正（08-02）
+
+- 相机朝向改为路径切向（非自车 yaw），避免车道线跟着抖。  
+- 「假画龙」来自 EKF：GPS 不再改 yaw；估计在 Web 上改为青点。详见 `SUMMARY_2026-08-02_daily.md`。

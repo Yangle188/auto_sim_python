@@ -19,7 +19,8 @@ SLOW_DISTANCE = 25.0
 OBSTACLE_LATERAL_CLEARANCE = 1.8
 
 # 距路径终点小于此弧长时开始线性减速（m）
-END_SLOW_DISTANCE = 15.0
+# 需覆盖 v≈12m/s、减速度≈3m/s² 的制动距离（v²/2a≈24m），并留余量防冲出路线
+END_SLOW_DISTANCE = 40.0
 
 # --- ACC 跟车 ---
 # 期望时距（s）：d_des = MIN_GAP + TIME_GAP * v_ego

@@ -47,6 +47,7 @@ export interface SceneConfig {
   links: RouteLink[];
   obstacles: ObstacleIn[];
   duration_s: number;
+  base_map_id?: string | null;
 }
 
 export interface VehicleState {
@@ -86,6 +87,9 @@ export interface Snapshot {
   lane_left?: Point[];
   lane_right?: Point[];
   lane_markings?: LaneMarking[];
+  /** 底图全网车道线（导航场景） */
+  network_lane_markings?: LaneMarking[];
+  base_map_id?: string | null;
   vehicle_geom?: VehicleGeom;
   obstacles: { x: number; y: number; width: number; height: number }[];
   fused: { x: number; y: number; source?: string }[];
@@ -109,4 +113,31 @@ export interface PresetMeta {
   id: string;
   title: string;
   description: string;
+}
+
+export interface BaseMapNode {
+  node_id: string;
+  x: number;
+  y: number;
+  name?: string;
+}
+
+export interface BaseMapEdge {
+  edge_id: string;
+  from_node: string;
+  to_node: string;
+  points: Point[];
+  speed_limit: number;
+  name?: string;
+  road_class?: RoadClass;
+  maneuver?: Maneuver;
+  length?: number;
+}
+
+export interface BaseMapData {
+  map_id: string;
+  title: string;
+  nodes: BaseMapNode[];
+  edges: BaseMapEdge[];
+  lane_markings?: LaneMarking[];
 }

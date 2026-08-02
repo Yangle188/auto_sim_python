@@ -1,6 +1,7 @@
 # sim_server/session.py
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 from config import DT, STATE_OFF, STATE_ACTIVE, STATE_STANDBY, STATE_PASSIVE, HMI_INFO
@@ -31,8 +32,37 @@ from localization.ekf_localizer import EKFLocalizer
 from localization.config import GPS_PERIOD
 from prediction.predictor import ObstaclePredictor
 from map.map_manager import MapManager
+from map.demo_base_map import default_base_map
+from map.road_viz import base_map_lane_markings
 
 from .scene_schema import SceneConfig, default_scene_config, evaluate_motion
+
+
+def _resolve_base_map(map_id: Optional[str], route_id: Optional[str] = None):
+    base = default_base_map()
+    if map_id and map_id == base.map_id:
+        return base
+    # 算路生成的 route_id 形如 campus_grid_N7_N3
+    if route_id and str(route_id).startswith(base.map_id):
+        return base
+    return None
+
+
+def _initial_pose_from_waypoints(
+    waypoints: List[Tuple[float, float]],
+) -> Tuple[float, float, float]:
+    """路线起点 + 首段切向航向，避免默认朝 +x 在竖向路段上切角冲出车道。"""
+    if not waypoints:
+        return 0.0, 0.0, 0.0
+    x0, y0 = float(waypoints[0][0]), float(waypoints[0][1])
+    yaw = 0.0
+    for i in range(len(waypoints) - 1):
+        dx = float(waypoints[i + 1][0]) - float(waypoints[i][0])
+        dy = float(waypoints[i + 1][1]) - float(waypoints[i][1])
+        if math.hypot(dx, dy) > 1e-6:
+            yaw = math.atan2(dy, dx)
+            break
+    return x0, y0, yaw
 
 
 class SimSession:
@@ -129,11 +159,11 @@ class SimSession:
         self.localizer = EKFLocalizer()
         self.map_mgr = MapManager()
         self.map_mgr.set_route(config.to_route())
+        self.world.set_reference_path(self.map_mgr.get_waypoints())
 
-        true0 = self.world.vehicle.get_state()
-        self.localizer.reset(
-            x=true0["x"], y=true0["y"], yaw=true0["yaw"], speed=true0["speed"]
-        )
+        x0, y0, yaw0 = _initial_pose_from_waypoints(self.world.reference_path)
+        self.world.vehicle.reset(x=x0, y=y0, yaw=yaw0, speed=0.0)
+        self.localizer.reset(x=x0, y=y0, yaw=yaw0, speed=0.0)
 
         self._dynamic: List[Tuple[Obstacle, Any]] = []
         for obs_in in config.obstacles:
@@ -142,7 +172,14 @@ class SimSession:
             if obs_in.dynamic and obs_in.motion is not None:
                 self._dynamic.append((obs, obs_in.motion))
 
-        self.world.set_reference_path(self.map_mgr.get_waypoints())
+        # 底图全网车道线（可视化）；自车控制仍只跟 route 中心线
+        self._network_lane_markings: List[Dict[str, Any]] = []
+        base = _resolve_base_map(
+            getattr(config, "base_map_id", None),
+            getattr(config, "route_id", None),
+        )
+        if base is not None:
+            self._network_lane_markings = base_map_lane_markings(base)
 
         def on_state_changed(old_state: str, new_state: str) -> None:
             self.event_bus.publish(
@@ -180,9 +217,15 @@ class SimSession:
             obs.y = oy
 
     def _truth_leads(self) -> List[Dict[str, float]]:
-        """由脚本/线性运动求真值前车状态，供 ACC（避免感知噪声误跟）。"""
+        """
+        真值前车/障碍，供纵向 ACC（避免只靠感知漏检或噪声）。
+
+        - 动态障碍：带速度
+        - 静态障碍：v=0（画布放置的静止物也必须能触发制动）
+        """
         t = self.sim_time
         out: List[Dict[str, float]] = []
+        dynamic_ids = {id(obs) for obs, _ in self._dynamic}
         for obs, motion in self._dynamic:
             x0, y0 = evaluate_motion(motion, t)
             x1, y1 = evaluate_motion(motion, t + max(DT, _ACC_VEL_EPS))
@@ -192,6 +235,17 @@ class SimSession:
                     "y": float(y0),
                     "vx": float((x1 - x0) / max(DT, _ACC_VEL_EPS)),
                     "vy": float((y1 - y0) / max(DT, _ACC_VEL_EPS)),
+                }
+            )
+        for obs in self.world.obstacles:
+            if id(obs) in dynamic_ids:
+                continue
+            out.append(
+                {
+                    "x": float(obs.x),
+                    "y": float(obs.y),
+                    "vx": 0.0,
+                    "vy": 0.0,
                 }
             )
         return out
@@ -361,6 +415,9 @@ class SimSession:
                 }
                 for m in (lane.get("markings") or [])
             ],
+            # 底图其他路段车道线（dim 绘制）；无底图时为空
+            "network_lane_markings": list(getattr(self, "_network_lane_markings", [])),
+            "base_map_id": getattr(self._applied, "base_map_id", None),
             "vehicle_geom": self.world.get_vehicle_geom(),
             "obstacles": [
                 {

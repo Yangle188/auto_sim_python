@@ -1,9 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 import { BirdEyeCanvas } from "./BirdEyeCanvas";
 import { ConfigPanel } from "./ConfigPanel";
-import { fetchPresets, fetchScene, postControl, putScene, simWsUrl } from "./api";
+import {
+  fetchBasemap,
+  fetchPresets,
+  fetchScene,
+  postControl,
+  postRoutePlan,
+  putScene,
+  simWsUrl,
+} from "./api";
 import { statusZh } from "./labels";
-import type { PresetMeta, SceneConfig, Snapshot, StatusPayload } from "./types";
+import type { EditTool } from "./sceneEdit";
+import type { BaseMapData, PresetMeta, SceneConfig, Snapshot, StatusPayload } from "./types";
 
 const EMPTY: SceneConfig = {
   route_id: "custom",
@@ -37,14 +46,21 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [wsOk, setWsOk] = useState(false);
+  const [editTool, setEditTool] = useState<EditTool>("none");
+  const [selectedLinkIdx, setSelectedLinkIdx] = useState(0);
+  const [selectedObstacleIdx, setSelectedObstacleIdx] = useState<number | null>(null);
+  const [baseMap, setBaseMap] = useState<BaseMapData | null>(null);
+  const [navStart, setNavStart] = useState<string | null>(null);
+  const [navEnd, setNavEnd] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([fetchScene(), fetchPresets()])
-      .then(([sceneData, presetData]) => {
+    Promise.all([fetchScene(), fetchPresets(), fetchBasemap()])
+      .then(([sceneData, presetData, bm]) => {
         setDraft(sceneData.draft);
         setStatus(sceneData.status);
         setPresets(presetData.presets);
         setScenes(presetData.scenes);
+        setBaseMap(bm);
       })
       .catch((e) => setError(String(e.message || e)));
   }, []);
@@ -117,6 +133,7 @@ export default function App() {
       const st = await postControl("start");
       setStatus(st);
       setSnapshot(null);
+      setEditTool("none");
     } catch (e) {
       setError(String((e as Error).message || e));
     } finally {
@@ -128,9 +145,48 @@ export default function App() {
     const scene = scenes[id];
     if (scene) {
       setDraft(scene);
+      setSelectedLinkIdx(0);
+      setSelectedObstacleIdx(scene.obstacles.length ? 0 : null);
+      setNavStart(null);
+      setNavEnd(null);
       setError(null);
     }
   };
+
+  const onNavPick = useCallback(
+    async (nodeId: string) => {
+      if (!navStart || (navStart && navEnd)) {
+        setNavStart(nodeId);
+        setNavEnd(null);
+        setError(null);
+        return;
+      }
+      if (nodeId === navStart) {
+        setError("终点不能与起点相同");
+        return;
+      }
+      setNavEnd(nodeId);
+      setBusy(true);
+      setError(null);
+      try {
+        const res = await postRoutePlan({
+          start_node: navStart,
+          end_node: nodeId,
+          duration_s: draft.duration_s,
+          clear_obstacles: true,
+        });
+        setDraft(res.draft);
+        setSelectedLinkIdx(0);
+        setSelectedObstacleIdx(null);
+      } catch (e) {
+        setError(String((e as Error).message || e));
+        setNavEnd(null);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [navStart, navEnd, draft.duration_s]
+  );
 
   const paused = status.status === "paused";
 
@@ -186,7 +242,21 @@ export default function App() {
 
       <main className="main">
         <section className="stage">
-          <BirdEyeCanvas snapshot={snapshot} paused={paused} />
+          <BirdEyeCanvas
+            snapshot={snapshot}
+            paused={paused}
+            draft={draft}
+            editTool={editTool}
+            selectedLinkIdx={selectedLinkIdx}
+            selectedObstacleIdx={selectedObstacleIdx}
+            onChangeDraft={setDraft}
+            onSelectLink={setSelectedLinkIdx}
+            onSelectObstacle={setSelectedObstacleIdx}
+            baseMap={baseMap}
+            navStart={navStart}
+            navEnd={navEnd}
+            onNavPick={onNavPick}
+          />
         </section>
         <ConfigPanel
           draft={draft}
@@ -196,6 +266,12 @@ export default function App() {
           onLoadPreset={onLoadPreset}
           busy={busy}
           error={error}
+          editTool={editTool}
+          onEditTool={setEditTool}
+          selectedLinkIdx={selectedLinkIdx}
+          onSelectLink={setSelectedLinkIdx}
+          selectedObstacleIdx={selectedObstacleIdx}
+          onSelectObstacle={setSelectedObstacleIdx}
         />
       </main>
     </div>

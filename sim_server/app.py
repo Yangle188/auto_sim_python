@@ -6,7 +6,7 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, Literal, Set
+from typing import Any, Dict, Literal, Set, Tuple
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +15,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from config import DT
-from .scene_schema import SceneConfig, default_scene_config, list_presets
+from map.demo_base_map import default_base_map
+from map.router import plan_route, route_length
+from .scene_schema import (
+    SceneConfig,
+    default_scene_config,
+    list_presets,
+    route_to_scene_links,
+)
 from .session import SimSession
 
 _session = SimSession(default_scene_config())
@@ -26,6 +33,17 @@ _loop_task: asyncio.Task | None = None
 
 class ControlBody(BaseModel):
     action: Literal["start", "pause", "resume", "reset"]
+
+
+class RoutePlanBody(BaseModel):
+    """起终点算路：节点 ID 或世界坐标（自动吸附）。"""
+
+    start_node: str | None = None
+    end_node: str | None = None
+    start: Tuple[float, float] | None = None
+    end: Tuple[float, float] | None = None
+    duration_s: float = 30.0
+    clear_obstacles: bool = True
 
 
 def get_session() -> SimSession:
@@ -117,6 +135,52 @@ async def get_presets() -> Dict[str, Any]:
         ],
         "scenes": {k: v["scene"] for k, v in presets.items()},
     }
+
+
+@app.get("/api/basemap")
+async def get_basemap() -> Dict[str, Any]:
+    """教学底图（节点/边），供前端点选起终点。"""
+    return default_base_map().to_dict()
+
+
+@app.post("/api/route/plan")
+async def post_route_plan(body: RoutePlanBody) -> Dict[str, Any]:
+    """底图最短路 → 写入 draft 场景路线（不清空则保留障碍）。"""
+    base = default_base_map()
+    try:
+        route = plan_route(
+            base,
+            start_node=body.start_node,
+            end_node=body.end_node,
+            start_xy=tuple(body.start) if body.start is not None else None,
+            end_xy=tuple(body.end) if body.end is not None else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    async with _lock:
+        obstacles = [] if body.clear_obstacles else list(_session.draft_config.obstacles)
+        scene = SceneConfig(
+            route_id=route.route_id,
+            links=route_to_scene_links(route),
+            obstacles=obstacles,
+            duration_s=float(body.duration_s),
+            base_map_id=base.map_id,
+        )
+        try:
+            scene.to_route()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _session.set_draft(scene)
+        return {
+            "ok": True,
+            "length_m": route_length(route),
+            "draft": _session.draft_config.model_dump(),
+            "start_node": body.start_node
+            or (base.nearest_node(*body.start).node_id if body.start else None),
+            "end_node": body.end_node
+            or (base.nearest_node(*body.end).node_id if body.end else None),
+        }
 
 
 @app.get("/api/scene")

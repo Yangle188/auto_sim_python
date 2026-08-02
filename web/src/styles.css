@@ -126,6 +126,11 @@ body {
   border-radius: var(--radius);
   border: 1px solid var(--line);
   background: #0f1419;
+  touch-action: none;
+}
+
+.bird-eye-wrap.editing .bird-eye {
+  border-color: rgba(251, 191, 36, 0.45);
 }
 
 .zoom-controls {
@@ -188,6 +193,58 @@ body {
 .panel-actions {
   display: flex;
   gap: 0.35rem;
+  flex-wrap: wrap;
+  margin-top: 0.45rem;
+}
+
+.tool-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.35rem;
+}
+
+.tool-row.tool-row-4 {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.btn.tool.active {
+  background: linear-gradient(135deg, #b45309, #d97706);
+  border-color: transparent;
+  color: #fff;
+}
+
+.meta-row {
+  display: grid;
+  grid-template-columns: 1fr 88px;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.field.compact {
+  margin-bottom: 0;
+}
+
+.link-block.selected,
+.obs-block.selected {
+  background: rgba(251, 191, 36, 0.08);
+  border-radius: 8px;
+  padding: 0.35rem 0.35rem 0.2rem;
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  border-bottom-style: solid;
+}
+
+.pts-summary {
+  margin: 0.15rem 0 0.25rem;
+}
+
+.obs-compact {
+  grid-template-columns: 1fr 52px 52px auto 28px !important;
+}
+
+.obs-pos {
+  font: 500 0.72rem "IBM Plex Mono", monospace;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .block {
