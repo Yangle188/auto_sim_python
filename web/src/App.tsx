@@ -108,7 +108,10 @@ export default function App() {
   }, []);
 
   const runControl = useCallback(
-    async (action: ControlAction, extra?: { frame_i?: number }) => {
+    async (
+      action: ControlAction,
+      extra?: { frame_i?: number; direction?: "left" | "right" }
+    ) => {
       setBusy(true);
       setError(null);
       try {
@@ -161,6 +164,16 @@ export default function App() {
       if (e.code === "ArrowRight") {
         e.preventDefault();
         runControl("step_next");
+        return;
+      }
+      if (e.key === "[" || e.code === "BracketLeft") {
+        e.preventDefault();
+        runControl("lane_change", { direction: "left" });
+        return;
+      }
+      if (e.key === "]" || e.code === "BracketRight") {
+        e.preventDefault();
+        runControl("lane_change", { direction: "right" });
       }
     };
     window.addEventListener("keydown", onKey);
@@ -255,6 +268,11 @@ export default function App() {
     !canDeactivate ||
     status.status === "idle" ||
     status.status === "finished";
+  const canLaneChange =
+    (status.can_lane_change ?? false) &&
+    (status.status === "running" || status.status === "paused");
+  const laneChangeDisabled =
+    busy || !canLaneChange || status.status === "idle" || status.status === "finished";
   const activateTitle = status.ad_engage_pending
     ? "已请求激活，等待车速进入允许区间（约 5–30 m/s）"
     : activateDisabled
@@ -264,6 +282,10 @@ export default function App() {
           ? `当前 AD 为「${adStateZh(adState)}」，需进入待机(STANDBY)后才能激活（约 t≥2.5s）`
           : "当前不可激活"
       : "STANDBY → ACTIVE（车速未就绪时会挂起，达速后自动切入）";
+
+  const laneIdx =
+    status.lane_change?.lane_index ?? snapshot?.lane_index ?? null;
+  const aebMode = snapshot?.aeb?.mode;
 
   return (
     <div className="app">
@@ -335,6 +357,24 @@ export default function App() {
           </button>
           <button
             type="button"
+            className="btn accent"
+            disabled={laneChangeDisabled}
+            onClick={() => runControl("lane_change", { direction: "left" })}
+            title="拨杆左变道（[）"
+          >
+            左变道
+          </button>
+          <button
+            type="button"
+            className="btn accent"
+            disabled={laneChangeDisabled}
+            onClick={() => runControl("lane_change", { direction: "right" })}
+            title="拨杆右变道（]）"
+          >
+            右变道
+          </button>
+          <button
+            type="button"
             className="btn"
             disabled={busy}
             onClick={() => runControl("reset")}
@@ -347,12 +387,19 @@ export default function App() {
           <span>
             {statusZh(status.status)}
             {adState ? ` · AD ${adStateZh(adState)}` : ""}
+            {laneIdx != null ? ` · 车道${laneIdx}` : ""}
+            {status.lane_change?.state && status.lane_change.state !== "idle"
+              ? ` · 变道:${status.lane_change.state}`
+              : ""}
+            {aebMode && aebMode !== "none" ? ` · ${String(aebMode).toUpperCase()}` : ""}
             {status.ad_engage_pending ? " · 待激活" : ""}
             {status.scrubbing ? " · 回看" : ""} · t={status.t.toFixed(2)}/
             {status.duration_s.toFixed(0)}s
             {frameN > 0 ? ` · 帧 ${Math.max(0, frameI) + 1}/${frameN}` : ""}
           </span>
-          <span className="hint-key">空格=开始/暂停 · ←/→=逐帧 · 达速后点「激活」</span>
+          <span className="hint-key">
+            空格=开始/暂停 · ←/→=逐帧 · [/]=拨杆变道 · 达速后点「激活」
+          </span>
         </div>
       </header>
 

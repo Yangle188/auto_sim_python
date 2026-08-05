@@ -2,6 +2,22 @@
 
 本文件记录 AutoSim（`PythonProject`）面向用户的变更摘要。
 
+## 2026-08-05
+
+### L2 P1：车道级底图 + LCC + 拨杆变道 + FCW/AEB
+
+- 新增 `map/lane_map.py`：Lane（中心线、虚实线、左右邻道、successor）与中心线 adapter。
+- 教学底图：`highway_3lane`（可换道/实线禁换/限速分段）、`urban_arterial`（主干+路口停车线）；`GET /api/maps`、`/api/basemap?map_id=`。
+- LCC：跟当前 `ego_lane` 中心线；snapshot 增加 `ego_lane_id` / `lane_index` / `lane_change` / `aeb`。
+- 拨杆变道：`planning/lane_change.py`；`POST /api/control` `action=lane_change`；Web「左/右变道」与 `[` / `]`。
+- FCW/AEB：`safety/aeb.py`，与 ACC 仲裁（AEB 优先盖写减速度）；HMI 文言。
+- 默认预设改为 `highway_lcc`；新增 `highway_aeb`、`urban_arterial`；保留 `acc_highway` / `urban_turns`。
+- **事件日志**：`SimSession._sim_log` 将场景启动、激活、变道、ACC、FCW/AEB、限速等写入 HMI「事件日志」面板。
+- **鸟瞰左右**：heading-up 相机将车体左侧映射到屏幕左侧（原先左右镜像，导致「左/右变道」观感相反）。
+- **变道视角**：相机航向锁定车道/道路中心线切向（`view.cam_yaw`），不再跟变道过渡曲线拧画面；自车仍可横向移动。
+- **加速度 HUD**：snapshot 增加 `accel`（m/s²），鸟瞰左上角显示纵向加速度指令。
+- **HMI 窗口**：可拖动标题栏移动；事件日志区可滚动，避免底部条目被裁切。
+
 ## 2026-08-02
 
 ### HMI / Web

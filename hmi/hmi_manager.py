@@ -14,11 +14,22 @@ _ALERT_LEVEL_PRIORITY = {
     HMI_FAULT: 4,
 }
 
-# 标准文言 code（前端可按 code 高亮）
+# 标准文言 / 事件日志 code（前端按 code 显示标签）
 CODE_AD_ACTIVATE = "ad_activate"
 CODE_AD_EXIT = "ad_exit"
 CODE_SPEED_LIMIT = "speed_limit"
 CODE_STATE_CHANGE = "state_change"
+CODE_LC_START = "lane_change_start"
+CODE_LC_DONE = "lane_change_done"
+CODE_LC_ABORT = "lane_change_abort"
+CODE_LC_REJECT = "lane_change_reject"
+CODE_FCW = "fcw"
+CODE_AEB = "aeb"
+CODE_AEB_CLEAR = "aeb_clear"
+CODE_ACC = "acc"
+CODE_SCENE = "scene"
+CODE_LCC = "lcc"
+CODE_ENGAGE = "engage"
 
 
 class HMIManager:

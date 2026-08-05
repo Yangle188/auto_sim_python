@@ -4,7 +4,16 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
-from config import DT, STATE_OFF, STATE_ACTIVE, STATE_STANDBY, STATE_PASSIVE, HMI_INFO
+from config import (
+    DT,
+    STATE_OFF,
+    STATE_ACTIVE,
+    STATE_STANDBY,
+    STATE_PASSIVE,
+    HMI_INFO,
+    HMI_WARNING,
+    HMI_ALERT,
+)
 
 _ACC_VEL_EPS = 1e-3
 from framework.state_machine import (
@@ -20,6 +29,17 @@ from hmi.hmi_manager import (
     CODE_AD_EXIT,
     CODE_SPEED_LIMIT,
     CODE_STATE_CHANGE,
+    CODE_LC_START,
+    CODE_LC_DONE,
+    CODE_LC_ABORT,
+    CODE_LC_REJECT,
+    CODE_FCW,
+    CODE_AEB,
+    CODE_AEB_CLEAR,
+    CODE_ACC,
+    CODE_SCENE,
+    CODE_LCC,
+    CODE_ENGAGE,
 )
 from framework.config import (
     ACTIVE_LOW_SPEED_THRESHOLD,
@@ -27,6 +47,7 @@ from framework.config import (
 )
 from framework.event_bus import EventBus
 from simulator.world import SimulationWorld, Obstacle
+from simulator.config import LANE_WIDTH, NUM_LANES
 from hmi.hmi_manager import HMIManager
 from perception.lidar_sim import LidarSimulator
 from perception.camera_sim import CameraSimulator
@@ -35,24 +56,92 @@ from control.pure_pursuit import PurePursuit
 from control.config import STANDBY_ACC
 from planning.path_planner import PathPlanner
 from planning.traj_planner import TrajPlanner
+from planning.lane_change import LaneChangeController, LC_IDLE, LC_CHANGING, LC_ABORTING
 from localization.ekf_localizer import EKFLocalizer
 from localization.config import GPS_PERIOD
 from prediction.predictor import ObstaclePredictor
 from map.map_manager import MapManager
-from map.demo_base_map import default_base_map
+from map.link import Link
+from map.route import Route
+from map.demo_lane_maps import get_base_map, get_lane_map
+from map.lane_map import LaneMap, lanes_from_centerline
 from map.road_viz import base_map_lane_markings
+from safety.aeb import AEBController, MODE_AEB, MODE_FCW, MODE_NONE
 
 from .scene_schema import SceneConfig, default_scene_config, evaluate_motion
 
 
 def _resolve_base_map(map_id: Optional[str], route_id: Optional[str] = None):
-    base = default_base_map()
-    if map_id and map_id == base.map_id:
-        return base
+    if map_id:
+        return get_base_map(map_id)
     # 算路生成的 route_id 形如 campus_grid_N7_N3
-    if route_id and str(route_id).startswith(base.map_id):
-        return base
+    if route_id:
+        for mid in ("campus_grid", "highway_3lane", "urban_arterial"):
+            if str(route_id).startswith(mid):
+                return get_base_map(mid)
     return None
+
+
+def _resolve_lane_map(config: SceneConfig, waypoints: List[Tuple[float, float]]) -> LaneMap:
+    lm = get_lane_map(getattr(config, "lane_map_id", None))
+    if lm is not None:
+        return lm
+    # adapter：从导航中心线挤出多车道
+    speed = 12.0
+    if config.links:
+        speed = float(config.links[0].speed_limit)
+    return lanes_from_centerline(
+        map_id=f"adapter_{config.route_id}",
+        centerline=waypoints if len(waypoints) >= 2 else [(0.0, 0.0), (50.0, 0.0)],
+        num_lanes=NUM_LANES,
+        lane_width=LANE_WIDTH,
+        speed_limit=speed,
+        title=f"adapter:{config.route_id}",
+    )
+
+
+def _pick_start_lane_id(lane_map: LaneMap, start_index: int) -> str:
+    ids = lane_map.lane_ids_by_index(int(start_index))
+    if ids:
+        # 取链起点：无 predecessor 优先
+        for lid in ids:
+            if not lane_map.lanes[lid].predecessors:
+                return lid
+        return ids[0]
+    # 回退任意 driving
+    for lane in lane_map.lanes.values():
+        if lane.lane_type == "driving":
+            return lane.lane_id
+    return next(iter(lane_map.lanes))
+
+
+def _polyline_tangent_yaw(
+    x: float, y: float, points: List[Tuple[float, float]]
+) -> Optional[float]:
+    """折线最近点切向航向；点列不足时返回 None。"""
+    if len(points) < 2:
+        return None
+    best_i = 0
+    best_d2 = float("inf")
+    for i in range(len(points) - 1):
+        x0, y0 = float(points[i][0]), float(points[i][1])
+        x1, y1 = float(points[i + 1][0]), float(points[i + 1][1])
+        dx, dy = x1 - x0, y1 - y0
+        seg2 = dx * dx + dy * dy
+        if seg2 < 1e-18:
+            continue
+        t = ((x - x0) * dx + (y - y0) * dy) / seg2
+        t = max(0.0, min(1.0, t))
+        px, py = x0 + t * dx, y0 + t * dy
+        d2 = (px - x) ** 2 + (py - y) ** 2
+        if d2 < best_d2:
+            best_d2 = d2
+            best_i = i
+    x0, y0 = float(points[best_i][0]), float(points[best_i][1])
+    x1, y1 = float(points[best_i + 1][0]), float(points[best_i + 1][1])
+    if math.hypot(x1 - x0, y1 - y0) < 1e-9:
+        return None
+    return math.atan2(y1 - y0, x1 - x0)
 
 
 def _initial_pose_from_waypoints(
@@ -152,9 +241,18 @@ class SimSession:
                 "ad_state": self.state_machine.get_state(),
                 "reason": "not_standby",
             }
+        already_pending = bool(self._ad_engage_pending)
         self._ad_engage_pending = True
         ok = self._try_engage()
         if ok:
+            self._sync_ad_state_into_view()
+        else:
+            if not already_pending:
+                speed = float(self.localizer.get_state().get("speed", 0.0))
+                self._sim_log(
+                    CODE_ENGAGE,
+                    f"激活请求已挂起（当前车速 {speed:.1f} m/s，待进入 5–30 m/s）",
+                )
             self._sync_ad_state_into_view()
         return {
             "ok": ok,
@@ -175,11 +273,51 @@ class SimSession:
         ok = self.state_machine.transit(EV_DEACTIVATE, vehicle_speed=speed)
         if ok:
             self._ad_engage_pending = False
+            if hasattr(self, "lane_change"):
+                self.lane_change.reset(self.lane_change.ego_lane_id)
             self._sync_ad_state_into_view()
         return {
             "ok": ok,
             "ad_state": self.state_machine.get_state(),
             "reason": None if ok else "transit_failed",
+        }
+
+    def request_lane_change(self, direction: str) -> Dict[str, Any]:
+        """拨杆变道请求（left / right）。"""
+        true_state = self.world.vehicle.get_state()
+        truth_leads = self._truth_leads()
+        result = self.lane_change.request(
+            direction,
+            speed=float(true_state.get("speed", 0.0)),
+            ego_xy=(float(true_state["x"]), float(true_state["y"])),
+            leads=truth_leads,
+            active=self.state_machine.get_state() == STATE_ACTIVE,
+        )
+        if result.ok:
+            side = "左" if direction.lower() == "left" else "右"
+            from_id = self.lane_change.ego_lane_id
+            to_id = result.target_lane_id or ""
+            from_idx = self.lane_map.lanes[from_id].index if from_id in self.lane_map.lanes else "?"
+            to_idx = (
+                self.lane_map.lanes[to_id].index if to_id in self.lane_map.lanes else "?"
+            )
+            self._sim_log(
+                CODE_LC_START,
+                f"拨杆{side}变道：车道{from_idx} → {to_idx}（{from_id} → {to_id}）",
+            )
+        else:
+            self._sim_log(
+                CODE_LC_REJECT,
+                f"无法变道：{result.msg or result.reason}",
+                level=HMI_WARNING,
+            )
+        self._sync_ad_state_into_view()
+        return {
+            "ok": result.ok,
+            "reason": result.reason,
+            "msg": result.msg,
+            "lane_change": self.lane_change.status_payload(),
+            "ad_state": self.state_machine.get_state(),
         }
 
     def _sync_ad_state_into_view(self) -> None:
@@ -214,13 +352,28 @@ class SimSession:
         code: str = "",
         level: str = HMI_INFO,
     ) -> None:
+        """兼容旧调用；请优先使用 `_sim_log` 记录关键事件。"""
+        self._sim_log(code or CODE_STATE_CHANGE, msg, level=level)
+
+    def _sim_log(
+        self,
+        code: str,
+        msg: str,
+        *,
+        level: str = HMI_INFO,
+    ) -> None:
+        """
+        仿真事件日志 → HMI 面板。
+
+        习惯：关键功能/场景切换必须打一条可读中文日志（含 code），避免 silently 状态变化。
+        """
         self.event_bus.publish(
             topic="hmi_alert",
             data={
                 "level": level,
                 "msg": msg,
                 "code": code,
-                "t": float(self.sim_time),
+                "t": float(getattr(self, "sim_time", 0.0) or 0.0),
             },
         )
 
@@ -229,6 +382,11 @@ class SimSession:
         if not self._prev_v_limit_known:
             self._prev_v_limit = v_limit
             self._prev_v_limit_known = True
+            if v_limit is not None:
+                self._sim_log(
+                    CODE_SPEED_LIMIT,
+                    f"当前限速基准 {float(v_limit):.1f} m/s",
+                )
             return
         prev = self._prev_v_limit
         changed = (prev is None) != (v_limit is None)
@@ -243,8 +401,24 @@ class SimSession:
                 msg = (
                     f"限速切换：{float(prev):.1f} → {float(v_limit):.1f} m/s"
                 )
-            self._publish_hmi(msg, code=CODE_SPEED_LIMIT)
+            self._sim_log(CODE_SPEED_LIMIT, msg)
         self._prev_v_limit = v_limit
+
+    def _maybe_log_acc_lead(self) -> None:
+        """ACC 跟车目标出现/丢失时记日志（按帧去重）。"""
+        lead = self.traj_planner.last_lead
+        present = lead is not None
+        if present == self._acc_lead_present:
+            return
+        self._acc_lead_present = present
+        if present and lead is not None:
+            self._sim_log(
+                CODE_ACC,
+                f"ACC 跟车：间距 {float(lead['d_gap']):.1f} m，"
+                f"前车 {float(lead['v_lead']):.1f} m/s（{lead.get('source', '?')}）",
+            )
+        else:
+            self._sim_log(CODE_ACC, "ACC 目标丢失 / 前车切出，恢复巡航")
 
     def step_frame(self, delta: int) -> Optional[Dict[str, Any]]:
         """
@@ -328,6 +502,12 @@ class SimSession:
             "ad_engage_pending": bool(self._ad_engage_pending),
             "can_activate": self.state_machine.get_state() == STATE_STANDBY,
             "can_deactivate": self.state_machine.get_state() == STATE_ACTIVE,
+            "can_lane_change": self.state_machine.get_state() == STATE_ACTIVE
+            and getattr(self, "lane_change", None) is not None
+            and self.lane_change.state == LC_IDLE,
+            "lane_change": self.lane_change.status_payload()
+            if getattr(self, "lane_change", None) is not None
+            else None,
         }
 
     def _teardown_hmi(self) -> None:
@@ -354,7 +534,22 @@ class SimSession:
         self.localizer = EKFLocalizer()
         self.map_mgr = MapManager()
         self.map_mgr.set_route(config.to_route())
-        self.world.set_reference_path(self.map_mgr.get_waypoints())
+        route_wps = self.map_mgr.get_waypoints()
+
+        self.lane_map = _resolve_lane_map(config, route_wps)
+        start_lane_id = _pick_start_lane_id(
+            self.lane_map, int(getattr(config, "start_lane_index", 1))
+        )
+        self.lane_change = LaneChangeController(self.lane_map)
+        self.lane_change.reset(start_lane_id)
+        self.aeb = AEBController()
+        self.aeb.reset()
+        self._aeb_mode_prev = "none"
+
+        # LCC：参考路径 = 当前车道链中心线
+        lcc_path = self.lane_change.lcc_path()
+        ref = lcc_path if len(lcc_path) >= 2 else route_wps
+        self.world.set_reference_path(ref)
 
         x0, y0, yaw0 = _initial_pose_from_waypoints(self.world.reference_path)
         self.world.vehicle.reset(x=x0, y=y0, yaw=yaw0, speed=0.0)
@@ -367,14 +562,18 @@ class SimSession:
             if obs_in.dynamic and obs_in.motion is not None:
                 self._dynamic.append((obs, obs_in.motion))
 
-        # 底图全网车道线（可视化）；自车控制仍只跟 route 中心线
+        # 底图 / 车道级标线（可视化）
         self._network_lane_markings: List[Dict[str, Any]] = []
         base = _resolve_base_map(
-            getattr(config, "base_map_id", None),
+            getattr(config, "base_map_id", None) or getattr(config, "lane_map_id", None),
             getattr(config, "route_id", None),
         )
-        if base is not None:
+        if getattr(config, "lane_map_id", None):
+            self._network_lane_markings = self.lane_map.markings_payload()
+        elif base is not None:
             self._network_lane_markings = base_map_lane_markings(base)
+        else:
+            self._network_lane_markings = self.lane_map.markings_payload()
 
         def on_state_changed(old_state: str, new_state: str) -> None:
             self.event_bus.publish(
@@ -382,13 +581,22 @@ class SimSession:
                 data={"old_state": old_state, "new_state": new_state},
             )
             if old_state == STATE_STANDBY and new_state == STATE_ACTIVE:
-                self._publish_hmi("功能已激活", code=CODE_AD_ACTIVATE)
+                lane = self.lane_change.ego_lane_id
+                idx = (
+                    self.lane_map.lanes[lane].index
+                    if lane in self.lane_map.lanes
+                    else "?"
+                )
+                self._sim_log(
+                    CODE_AD_ACTIVATE,
+                    f"功能已激活 · LCC 车道{idx}（{lane}）",
+                )
             elif old_state == STATE_ACTIVE and new_state == STATE_STANDBY:
-                self._publish_hmi("功能已退出", code=CODE_AD_EXIT)
+                self._sim_log(CODE_AD_EXIT, "功能已退出")
             else:
-                self._publish_hmi(
-                    f"系统状态切换：{old_state} → {new_state}",
-                    code=CODE_STATE_CHANGE,
+                self._sim_log(
+                    CODE_STATE_CHANGE,
+                    f"系统状态：{old_state} → {new_state}",
                 )
 
         self.state_machine.state_change_callback = on_state_changed
@@ -406,11 +614,28 @@ class SimSession:
         self._view_i: int = -1
         self._v_cmd = 0.0
         self._steer = 0.0
+        self._accel = 0.0
         self._v_limit: Optional[float] = None
         # STANDBY→ACTIVE 需驾驶员主动请求；车速未就绪时挂起，就绪后切入
         self._ad_engage_pending = False
         self._prev_v_limit: Optional[float] = None
         self._prev_v_limit_known = False
+        self._aeb_mode_prev = "none"
+        self._acc_lead_present = False
+
+        # 场景启动日志（写入 HMI 面板）
+        n_obs = len(config.obstacles)
+        n_dyn = sum(1 for o in config.obstacles if o.dynamic)
+        self._sim_log(
+            CODE_SCENE,
+            f"场景 {config.route_id} · 底图 {getattr(config, 'lane_map_id', None) or getattr(config, 'base_map_id', None) or 'adapter'} "
+            f"· 起步车道{int(getattr(config, 'start_lane_index', 1))} "
+            f"· 障碍 {n_obs}（动态 {n_dyn}）· 时长 {config.duration_s:.0f}s",
+        )
+        self._sim_log(
+            CODE_LCC,
+            f"LCC 就绪：当前 {start_lane_id}",
+        )
 
     def _update_dynamic_obstacles(self) -> None:
         t = self.sim_time
@@ -457,6 +682,83 @@ class SimSession:
             )
         return out
 
+    def _sync_nav_from_ego_lane(self) -> None:
+        """变道完成后，把 MapManager 导航链切到当前 ego 车道，避免金黄导航线仍停在旧道。"""
+        lane_id = self.lane_change.ego_lane_id
+        if not lane_id or lane_id not in self.lane_map.lanes:
+            return
+        chain = self.lane_map.follow_lane_chain(lane_id)
+        if not chain:
+            return
+        links = []
+        for lid in chain:
+            lane = self.lane_map.get(lid)
+            links.append(
+                Link(
+                    lid,
+                    lane.points,
+                    lane.speed_limit,
+                    name=lane.name or lid,
+                    road_class="main",
+                    maneuver="straight",
+                )
+            )
+        try:
+            self.map_mgr.set_route(Route(f"lcc_{chain[0]}", tuple(links)))
+        except ValueError:
+            pass
+
+    def _lane_display_payload(self, path: list) -> Dict[str, Any]:
+        """
+        鸟瞰车道线：绑定 lane_map_id 时用世界系标线（变道可见）；
+        否则回退到「path 居中挤出」（旧行为）+ 底图 dim 线。
+        """
+        ego_center = [list(p) for p in self.lane_change.lcc_path()]
+        use_world = bool(getattr(self._applied, "lane_map_id", None)) and bool(
+            getattr(self, "_network_lane_markings", None)
+        )
+        if use_world:
+            markings = list(self._network_lane_markings)
+            if ego_center:
+                markings = list(markings) + [
+                    {
+                        "role": "ego_lane_center",
+                        "style": "solid",
+                        "points": ego_center,
+                        "source": "ego_lane",
+                    }
+                ]
+            n = max(
+                (int(lane.index) for lane in self.lane_map.lanes.values()),
+                default=0,
+            ) + 1
+            return {
+                "lane_width": float(self.lane_map.lane_width),
+                "num_lanes": int(n),
+                "lane_left": [],
+                "lane_right": [],
+                "lane_markings": markings,
+                "ego_lane_centerline": ego_center,
+                "use_world_lanes": True,
+            }
+        lane = self.world.get_lane_boundaries(path if path else self.world.reference_path)
+        return {
+            "lane_width": float(lane["lane_width"]),
+            "num_lanes": int(lane.get("num_lanes", 1)),
+            "lane_left": [list(p) for p in lane["left"]],
+            "lane_right": [list(p) for p in lane["right"]],
+            "lane_markings": [
+                {
+                    "role": m.get("role", ""),
+                    "style": m.get("style", "solid"),
+                    "points": [list(p) for p in (m.get("points") or [])],
+                }
+                for m in (lane.get("markings") or [])
+            ],
+            "ego_lane_centerline": ego_center,
+            "use_world_lanes": False,
+        }
+
     def _advance_frame(self) -> Dict[str, Any]:
         if (
             not self.power_on_done
@@ -502,15 +804,57 @@ class SimSession:
 
         self.predictions = self.predictor.step(self.fused_obstacles, DT)
         est_state = self.localizer.get_state()
-        path = self.path_planner.plan(self.map_mgr.get_waypoints())
+        truth_leads = self._truth_leads()
+
+        # 变道状态推进 + LCC / 过渡路径
+        lc_tick = self.lane_change.tick(
+            DT,
+            (float(true_state["x"]), float(true_state["y"])),
+            leads=truth_leads,
+        )
+        if lc_tick.reason == "completed":
+            lane = self.lane_change.ego_lane_id
+            idx = (
+                self.lane_map.lanes[lane].index
+                if lane in self.lane_map.lanes
+                else "?"
+            )
+            self._sim_log(
+                CODE_LC_DONE,
+                f"变道完成 → 车道{idx}（{lane}），恢复 LCC",
+            )
+            self.world.set_reference_path(self.lane_change.lcc_path())
+            self._sync_nav_from_ego_lane()
+        elif lc_tick.reason in ("abort_occupied", "timeout", "aborted"):
+            self._sim_log(
+                CODE_LC_ABORT,
+                lc_tick.msg or f"变道取消（{lc_tick.reason}）",
+                level=HMI_WARNING,
+            )
+            self.world.set_reference_path(self.lane_change.lcc_path())
+            self._sync_nav_from_ego_lane()
+
+        override = self.lane_change.current_path_override()
+        raw_path = override if override else self.lane_change.lcc_path()
+        if len(raw_path) < 2:
+            raw_path = self.map_mgr.get_waypoints()
+        path = self.path_planner.plan(raw_path)
+
+        # 限速：优先当前车道属性，其次 MapManager 前瞻
         v_limit = self.map_mgr.get_speed_limit_ahead(est_state["x"], est_state["y"])
+        ego_lane = self.lane_map.lanes.get(self.lane_change.ego_lane_id)
+        if ego_lane is not None:
+            v_limit = (
+                float(ego_lane.speed_limit)
+                if v_limit is None
+                else min(float(v_limit), float(ego_lane.speed_limit))
+            )
         self._maybe_hmi_speed_limit(v_limit)
         acc = 0.0
         steer = 0.0
         state = self.state_machine.get_state()
         v_cmd = self.traj_planner.cruise_speed if v_limit is None else v_limit
 
-        truth_leads = self._truth_leads()
         # 横向控制用真值位姿：EKF 位置噪声会诱发 Pure Pursuit 画龙；
         # 规划仍用估计；估计轨迹仅叠加显示。
         ctrl_pose = true_state
@@ -541,7 +885,52 @@ class SimSession:
             )
             acc, steer = self.controller.compute(ctrl_pose, path, target_speed=v_cmd)
 
-        if v_cmd <= 1e-6:
+        if state in (STATE_ACTIVE, STATE_STANDBY):
+            self._maybe_log_acc_lead()
+
+        # AEB / FCW 仲裁（ACTIVE 与 STANDBY 均可告警；制动盖写在 ACTIVE/STANDBY）
+        aeb_res = self.aeb.evaluate(
+            true_state,
+            path,
+            leads=truth_leads,
+            enabled=state in (STATE_ACTIVE, STATE_STANDBY),
+        )
+        if aeb_res.mode != self._aeb_mode_prev:
+            if aeb_res.mode == MODE_FCW:
+                gap = aeb_res.d_gap
+                ttc = aeb_res.ttc
+                extra = []
+                if gap is not None:
+                    extra.append(f"d={gap:.1f}m")
+                if ttc is not None:
+                    extra.append(f"TTC={ttc:.1f}s")
+                suf = f"（{' · '.join(extra)}）" if extra else ""
+                self._sim_log(CODE_FCW, f"请注意前方{suf}", level=HMI_WARNING)
+            elif aeb_res.mode == MODE_AEB:
+                gap = aeb_res.d_gap
+                ttc = aeb_res.ttc
+                extra = []
+                if gap is not None:
+                    extra.append(f"d={gap:.1f}m")
+                if ttc is not None:
+                    extra.append(f"TTC={ttc:.1f}s")
+                suf = f"（{' · '.join(extra)}）" if extra else ""
+                self._sim_log(
+                    CODE_AEB,
+                    f"自动紧急制动{suf}",
+                    level=HMI_ALERT,
+                )
+            elif aeb_res.mode == MODE_NONE and self._aeb_mode_prev in (
+                MODE_FCW,
+                MODE_AEB,
+            ):
+                self._sim_log(CODE_AEB_CLEAR, "前向威胁解除，退出 FCW/AEB")
+            self._aeb_mode_prev = aeb_res.mode
+        if aeb_res.acc is not None and state in (STATE_ACTIVE, STATE_STANDBY):
+            acc = min(float(acc), float(aeb_res.acc))
+            v_cmd = min(v_cmd, max(0.0, float(true_state.get("speed", 0.0)) + float(aeb_res.acc) * DT))
+
+        if v_cmd <= 1e-6 and self.lane_change.state == LC_IDLE:
             steer = 0.0
 
         self.world.step(acc, steer)
@@ -569,6 +958,7 @@ class SimSession:
             intentional_slow = (
                 v_cmd < ACTIVE_LOW_SPEED_THRESHOLD - 0.5
                 or self.traj_planner.last_lead is not None
+                or self.aeb.last.mode == MODE_AEB
             )
             underspeed = (
                 current_speed < ACTIVE_LOW_SPEED_THRESHOLD and not intentional_slow
@@ -587,6 +977,7 @@ class SimSession:
             lookahead = list(lp) if lp is not None else None
         self._v_cmd = v_cmd
         self._steer = steer
+        self._accel = float(acc)
         self._v_limit = v_limit
 
         snap = self._to_snapshot(
@@ -597,6 +988,7 @@ class SimSession:
             v_cmd=v_cmd,
             steer=steer,
             v_limit=v_limit,
+            accel=float(acc),
             preview=preview,
         )
         self._last_snapshot = snap
@@ -612,11 +1004,21 @@ class SimSession:
         v_cmd: float,
         steer: float,
         v_limit: Optional[float],
+        accel: float = 0.0,
         preview: Optional[dict] = None,
     ) -> Dict[str, Any]:
-        lane = self.world.get_lane_boundaries(path if path else self.world.reference_path)
+        lane = self._lane_display_payload(path)
         lead = self.traj_planner.last_lead
         preview = preview or {}
+        # 相机航向跟车道/道路中心线，不跟变道过渡曲线，避免换道时画面跟着拧
+        road_pts = self.lane_change.lcc_path()
+        if len(road_pts) < 2:
+            road_pts = list(self.world.reference_path)
+        cam_yaw = _polyline_tangent_yaw(
+            float(true_state["x"]), float(true_state["y"]), road_pts
+        )
+        if cam_yaw is None:
+            cam_yaw = float(true_state.get("yaw", 0.0))
         return {
             "t": self.sim_time,
             "state": self.state_machine.get_state(),
@@ -630,19 +1032,27 @@ class SimSession:
             "lookahead_dist": float(preview.get("ld") or 0.0),
             "lane_width": float(lane["lane_width"]),
             "num_lanes": int(lane.get("num_lanes", 1)),
-            "lane_left": [list(p) for p in lane["left"]],
-            "lane_right": [list(p) for p in lane["right"]],
-            "lane_markings": [
-                {
-                    "role": m.get("role", ""),
-                    "style": m.get("style", "solid"),
-                    "points": [list(p) for p in (m.get("points") or [])],
-                }
-                for m in (lane.get("markings") or [])
-            ],
-            # 底图其他路段车道线（dim 绘制）；无底图时为空
-            "network_lane_markings": list(getattr(self, "_network_lane_markings", [])),
+            "lane_left": lane.get("lane_left") or [],
+            "lane_right": lane.get("lane_right") or [],
+            "lane_markings": lane.get("lane_markings") or [],
+            "ego_lane_centerline": lane.get("ego_lane_centerline") or [],
+            "use_world_lanes": bool(lane.get("use_world_lanes")),
+            # 底图其他路段车道线（dim 绘制）；世界系模式下与 lane_markings 同源，前端可跳过重复
+            "network_lane_markings": []
+            if lane.get("use_world_lanes")
+            else list(getattr(self, "_network_lane_markings", [])),
             "base_map_id": getattr(self._applied, "base_map_id", None),
+            "lane_map_id": getattr(self._applied, "lane_map_id", None),
+            "ego_lane_id": self.lane_change.ego_lane_id,
+            "lane_index": int(self.lane_map.lanes[self.lane_change.ego_lane_id].index)
+            if self.lane_change.ego_lane_id in self.lane_map.lanes
+            else None,
+            "lane_change": self.lane_change.status_payload(),
+            "aeb": {
+                "mode": self.aeb.last.mode,
+                "d_gap": self.aeb.last.d_gap,
+                "ttc": self.aeb.last.ttc,
+            },
             "vehicle_geom": self.world.get_vehicle_geom(),
             "obstacles": [
                 {
@@ -666,6 +1076,7 @@ class SimSession:
             ],
             "v_cmd": float(v_cmd),
             "steer": float(steer),
+            "accel": float(accel),
             "speed_limit": None if v_limit is None else float(v_limit),
             "acc": None
             if lead is None
@@ -676,7 +1087,11 @@ class SimSession:
             },
             "route_links": self.map_mgr.get_route_links(),
             "session_status": self.status,
-            "view": {"mode": "heading_up"},
+            "view": {
+                "mode": "heading_up",
+                "cam_yaw": float(cam_yaw),
+                "lock_road_heading": True,
+            },
             "hmi": self.hmi.to_payload(self.state_machine.get_state()),
         }
 

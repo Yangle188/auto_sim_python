@@ -135,6 +135,7 @@ def test_truth_leads_override_noisy_predictions():
     assert v == 12.0
 
 
-def test_default_scene_is_acc_highway():
+def test_default_scene_is_highway_lcc():
     cfg = default_scene_config()
-    assert cfg.route_id == "acc_highway"
+    assert cfg.route_id == "highway_lcc"
+    assert cfg.lane_map_id == "highway_3lane"

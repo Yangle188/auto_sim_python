@@ -48,6 +48,8 @@ export interface SceneConfig {
   obstacles: ObstacleIn[];
   duration_s: number;
   base_map_id?: string | null;
+  lane_map_id?: string | null;
+  start_lane_index?: number;
 }
 
 export interface VehicleState {
@@ -109,17 +111,32 @@ export interface Snapshot {
   /** 底图全网车道线（导航场景） */
   network_lane_markings?: LaneMarking[];
   base_map_id?: string | null;
+  lane_map_id?: string | null;
+  ego_lane_id?: string | null;
+  lane_index?: number | null;
+  ego_lane_centerline?: Point[];
+  use_world_lanes?: boolean;
+  lane_change?: {
+    state?: string;
+    ego_lane_id?: string;
+    target_lane_id?: string | null;
+    direction?: string;
+    lane_index?: number | null;
+  };
+  aeb?: { mode?: string; d_gap?: number | null; ttc?: number | null };
   vehicle_geom?: VehicleGeom;
   obstacles: { x: number; y: number; width: number; height: number }[];
   fused: { x: number; y: number; source?: string }[];
   predictions: { trajectory: Point[]; coasting?: boolean; vx?: number; vy?: number }[];
   v_cmd: number;
   steer: number;
+  /** 纵向加速度指令 (m/s²) */
+  accel?: number;
   speed_limit: number | null;
   acc?: { d_gap: number; v_lead: number; source: string } | null;
   route_links: RouteLink[];
   session_status?: string;
-  view?: { mode?: string };
+  view?: { mode?: string; cam_yaw?: number; lock_road_heading?: boolean };
   hmi?: HmiPayload;
 }
 
@@ -137,6 +154,14 @@ export interface StatusPayload {
   ad_engage_pending?: boolean;
   can_activate?: boolean;
   can_deactivate?: boolean;
+  can_lane_change?: boolean;
+  lane_change?: {
+    state?: string;
+    ego_lane_id?: string;
+    target_lane_id?: string | null;
+    direction?: string;
+    lane_index?: number | null;
+  };
 }
 
 export interface PresetMeta {

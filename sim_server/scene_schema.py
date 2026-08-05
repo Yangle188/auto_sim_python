@@ -12,6 +12,8 @@ from map.demo_routes import (
     build_demo_route,
     build_urban_turn_route,
 )
+from map.demo_lane_maps import get_lane_map
+from map.lane_map import LaneMap
 from simulator.config import LANE_WIDTH, VEHICLE_LENGTH, VEHICLE_WIDTH
 
 
@@ -93,6 +95,10 @@ class SceneConfig(BaseModel):
     duration_s: float = 40.0
     # 非空时 snapshot 附带该底图全网车道线（导航 Route 仍只含选中路径）
     base_map_id: Optional[str] = None
+    # 车道级智驾底图；空则从路线中心线 adapter 挤出
+    lane_map_id: Optional[str] = None
+    # 起步车道 index（自左向右，三车道默认中间=1）
+    start_lane_index: int = 1
 
     @field_validator("duration_s")
     @classmethod
@@ -169,11 +175,85 @@ def evaluate_motion(motion: Motion, t: float) -> Tuple[float, float]:
     return float(kfs[-1].x), float(kfs[-1].y)
 
 
+def _route_from_lane_chain(lane_map: LaneMap, start_lane_id: str, route_id: str) -> Route:
+    """由车道链生成导航 Route（限速按各 lane 段拆 Link）。"""
+    chain = lane_map.follow_lane_chain(start_lane_id)
+    links: List[Link] = []
+    for lid in chain:
+        lane = lane_map.get(lid)
+        links.append(
+            Link(
+                lid,
+                lane.points,
+                lane.speed_limit,
+                name=lane.name or lid,
+                road_class="main",
+                maneuver="straight",
+            )
+        )
+    if not links:
+        raise ValueError(f"empty lane chain from {start_lane_id}")
+    return Route(route_id, tuple(links))
+
+
+def highway_lcc_scene_config() -> SceneConfig:
+    """高速 LCC + 拨杆变道：右道起步，前方右道有静止慢障，可左变道超越。"""
+    lm = get_lane_map("highway_3lane")
+    assert lm is not None
+    # 右道 index=2
+    start_ids = lm.lane_ids_by_index(2)
+    start_lane = start_ids[0]
+    route = _route_from_lane_chain(lm, start_lane, "highway_lcc")
+    # 静止障碍放在右道前方（y=-LANE_WIDTH）
+    yw = -LANE_WIDTH
+    return SceneConfig(
+        route_id=route.route_id,
+        links=_route_to_links(route),
+        obstacles=[
+            ObstacleIn(
+                x=95.0,
+                y=yw,
+                width=VEHICLE_WIDTH,
+                height=VEHICLE_LENGTH * 0.85,
+            ),
+        ],
+        duration_s=45.0,
+        base_map_id="highway_3lane",
+        lane_map_id="highway_3lane",
+        start_lane_index=2,
+    )
+
+
+def highway_aeb_scene_config() -> SceneConfig:
+    """高速 AEB：中道巡航，前方突然出现静止车，触发 FCW→AEB。"""
+    lm = get_lane_map("highway_3lane")
+    assert lm is not None
+    start_lane = lm.lane_ids_by_index(1)[0]
+    route = _route_from_lane_chain(lm, start_lane, "highway_aeb")
+    return SceneConfig(
+        route_id=route.route_id,
+        links=_route_to_links(route),
+        obstacles=[
+            ObstacleIn(
+                x=70.0,
+                y=0.0,
+                width=VEHICLE_WIDTH,
+                height=VEHICLE_LENGTH * 0.9,
+            ),
+        ],
+        duration_s=25.0,
+        base_map_id="highway_3lane",
+        lane_map_id="highway_3lane",
+        start_lane_index=1,
+    )
+
+
 def acc_scene_config() -> SceneConfig:
     """
     默认演示：纵向跟车 → 前车 cut-out 加速 → 邻道 cut-in 减速跟随 → 再 cut-out 回巡航。
 
     车道宽 3.2m：左道 y=+3.2，自车道 y=0，右道 y=-3.2。
+    绑定 highway_3lane 车道图，自车中道 LCC。
     """
     route = build_acc_highway_route()
     lw = LANE_WIDTH
@@ -204,11 +284,41 @@ def acc_scene_config() -> SceneConfig:
             ),
         ],
         duration_s=42.0,
+        base_map_id="highway_3lane",
+        lane_map_id="highway_3lane",
+        start_lane_index=1,
     )
 
 
 def urban_scene_config() -> SceneConfig:
-    """城市：左右转 + 主辅路切换。"""
+    """城市主干：沿东向中道 LCC，含静止障碍与横穿动态车（AEB/ACC）。"""
+    lm = get_lane_map("urban_arterial")
+    assert lm is not None
+    start_lane = lm.lane_ids_by_index(1)[0]  # UR_EW0_L1
+    route = _route_from_lane_chain(lm, start_lane, "urban_arterial")
+    return SceneConfig(
+        route_id=route.route_id,
+        links=_route_to_links(route),
+        obstacles=[
+            ObstacleIn(x=30.0, y=0.0, width=VEHICLE_WIDTH, height=VEHICLE_LENGTH * 0.8),
+            ObstacleIn(
+                x=60.0,
+                y=-25.0,
+                width=2.0,
+                height=2.0,
+                dynamic=True,
+                motion=LinearMotion(type="linear", vx=0.0, vy=2.5, x0=60.0, y0=-25.0),
+            ),
+        ],
+        duration_s=35.0,
+        base_map_id="urban_arterial",
+        lane_map_id="urban_arterial",
+        start_lane_index=1,
+    )
+
+
+def urban_turns_scene_config() -> SceneConfig:
+    """旧城市左右转路线（兼容）。"""
     route = build_urban_turn_route()
     return SceneConfig(
         route_id=route.route_id,
@@ -256,26 +366,47 @@ def simple_scene_config() -> SceneConfig:
 
 
 def default_scene_config() -> SceneConfig:
-    return acc_scene_config()
+    return highway_lcc_scene_config()
 
 
 def list_presets() -> Dict[str, dict]:
     """预设场景目录（供前端下拉）。"""
+    highway_lcc = highway_lcc_scene_config()
+    highway_aeb = highway_aeb_scene_config()
     acc = acc_scene_config()
     urban = urban_scene_config()
+    urban_turns = urban_turns_scene_config()
     simple = simple_scene_config()
     return {
+        "highway_lcc": {
+            "id": "highway_lcc",
+            "title": "高速：LCC + 拨杆变道",
+            "description": "右道起步，前方静止障碍；激活后拨杆左变道超越，实线段不可换道",
+            "scene": highway_lcc.model_dump(),
+        },
+        "highway_aeb": {
+            "id": "highway_aeb",
+            "title": "高速：FCW / AEB",
+            "description": "中道接近静止前车，先 FCW 再 AEB 紧急制动",
+            "scene": highway_aeb.model_dump(),
+        },
         "acc_highway": {
             "id": "acc_highway",
             "title": "三车道：跟车 / Cut-in / Cut-out",
             "description": "本车道跟车巡航 → 前车切出加速 → 邻道切入减速跟随 → 再切出回目标车速",
             "scene": acc.model_dump(),
         },
+        "urban_arterial": {
+            "id": "urban_arterial",
+            "title": "城市：主干+路口",
+            "description": "东向主干 LCC，静止障碍 + 路口横穿动态车",
+            "scene": urban.model_dump(),
+        },
         "urban_turns": {
             "id": "urban_turns",
             "title": "城市：左右转 + 主辅路",
             "description": "主路直行→右转进辅路→辅路直行→左转汇入主路→主路直行",
-            "scene": urban.model_dump(),
+            "scene": urban_turns.model_dump(),
         },
         "simple": {
             "id": "simple",

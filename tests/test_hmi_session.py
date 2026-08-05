@@ -32,7 +32,9 @@ def test_hmi_activate_and_exit_messages():
     assert sess.request_activate()["ok"] is True
     codes = [a["code"] for a in sess.hmi.get_active_alerts()]
     assert CODE_AD_ACTIVATE in codes
-    assert any(a["msg"] == "功能已激活" for a in sess.hmi.get_active_alerts())
+    assert any(
+        a["msg"].startswith("功能已激活") for a in sess.hmi.get_active_alerts()
+    )
     snap = sess.step_once()
     assert snap is not None
     assert snap["hmi"]["ad_state"] == "ACTIVE"
@@ -72,8 +74,10 @@ def test_hmi_speed_limit_change_message():
         snap = sess.step_once()
         if snap is None:
             break
-        if any(a["code"] == CODE_SPEED_LIMIT for a in snap.get("hmi", {}).get("alerts", [])):
+        alerts = snap.get("hmi", {}).get("alerts", [])
+        if any(
+            a["code"] == CODE_SPEED_LIMIT and "限速切换" in a["msg"] for a in alerts
+        ):
             saw = True
-            assert any("限速切换" in a["msg"] for a in snap["hmi"]["alerts"])
             break
     assert saw, "行驶过不同限速路段时应出现限速切换提示"

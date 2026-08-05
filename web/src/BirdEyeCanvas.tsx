@@ -36,19 +36,39 @@ function colorForLimit(v: number, vMin: number, vMax: number): string {
 function pathTangentYaw(path: Point[] | undefined, x: number, y: number): number | null {
   if (!path || path.length < 2) return null;
   let bestI = 0;
-  let bestD = Infinity;
-  for (let i = 0; i < path.length; i++) {
-    const d = Math.hypot(path[i][0] - x, path[i][1] - y);
-    if (d < bestD) {
-      bestD = d;
+  let bestD2 = Infinity;
+  for (let i = 0; i < path.length - 1; i++) {
+    const [x0, y0] = path[i];
+    const [x1, y1] = path[i + 1];
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const L2 = dx * dx + dy * dy;
+    const t = L2 < 1e-12 ? 0 : Math.max(0, Math.min(1, ((x - x0) * dx + (y - y0) * dy) / L2));
+    const px = x0 + t * dx;
+    const py = y0 + t * dy;
+    const d2 = (px - x) ** 2 + (py - y) ** 2;
+    if (d2 < bestD2) {
+      bestD2 = d2;
       bestI = i;
     }
   }
-  const i0 = Math.min(bestI, path.length - 2);
-  const dx = path[i0 + 1][0] - path[i0][0];
-  const dy = path[i0 + 1][1] - path[i0][1];
-  if (Math.hypot(dx, dy) < 1e-9) return null;
-  return Math.atan2(dy, dx);
+  const [x0, y0] = path[bestI];
+  const [x1, y1] = path[bestI + 1];
+  if (Math.hypot(x1 - x0, y1 - y0) < 1e-9) return null;
+  return Math.atan2(y1 - y0, x1 - x0);
+}
+
+/** 道路朝上：优先用后端 cam_yaw / 车道中心线，避免变道过渡曲线拧画面 */
+function cameraYaw(snapshot: Snapshot, ego: { x: number; y: number; yaw: number }): number {
+  const fromView = snapshot.view?.cam_yaw;
+  if (typeof fromView === "number" && Number.isFinite(fromView)) {
+    return fromView;
+  }
+  const road =
+    snapshot.ego_lane_centerline && snapshot.ego_lane_centerline.length >= 2
+      ? snapshot.ego_lane_centerline
+      : snapshot.waypoints;
+  return pathTangentYaw(road, ego.x, ego.y) ?? pathTangentYaw(snapshot.path, ego.x, ego.y) ?? ego.yaw;
 }
 
 /** 后轴中心为原点的车体矩形（+x 朝车头） */
@@ -425,7 +445,7 @@ export function BirdEyeCanvas({
       ];
     } else {
       const ego = snapshot!.vehicle;
-      const camYaw = pathTangentYaw(snapshot!.path, ego.x, ego.y) ?? ego.yaw;
+      const camYaw = cameraYaw(snapshot!, ego);
       const camX = ego.x;
       const camY = ego.y;
       const c = Math.cos(camYaw);
@@ -443,11 +463,12 @@ export function BirdEyeCanvas({
         const dx = wx - camX;
         const dy = wy - camY;
         const fwd = c * dx + s * dy;
+        // 车体左侧 (+left) 应画在屏幕左侧（减小 screen x）
         const left = -s * dx + c * dy;
-        return [cx + left * scale, cy - fwd * scale];
+        return [cx - left * scale, cy - fwd * scale];
       };
       screenToWorld = (sx, sy) => {
-        const left = (sx - cx) * metersPerPx;
+        const left = (cx - sx) * metersPerPx;
         const fwd = (cy - sy) * metersPerPx;
         return [camX + c * fwd - s * left, camY + s * fwd + c * left];
       };
@@ -481,7 +502,7 @@ export function BirdEyeCanvas({
       }
     } else if (snapshot) {
       const ego = snapshot.vehicle;
-      const camYaw = pathTangentYaw(snapshot.path, ego.x, ego.y) ?? ego.yaw;
+      const camYaw = cameraYaw(snapshot, ego);
       const camX = ego.x;
       const camY = ego.y;
       const c = Math.cos(camYaw);
@@ -635,21 +656,35 @@ export function BirdEyeCanvas({
     }
 
     if (!editing && snapshot) {
-      // 自车导航路径车道线（更亮，叠在底图路网上）
+      // 世界系车道标线（LaneMap）：自车换道后相对标线横向移动可见
+      // path 居中挤出的标线会「跟着车走」，造成未变道的错觉，故世界系模式下不再叠画旧逻辑
       const markings = snapshot.lane_markings;
+      const worldLanes = !!snapshot.use_world_lanes;
       if (markings && markings.length > 0) {
+        const normal = markings.filter((m) => m.role !== "ego_lane_center");
+        const egoCenter = markings.filter((m) => m.role === "ego_lane_center");
         drawMarkings(
-          markings,
-          "rgba(226,232,240,0.95)",
-          "rgba(226,232,240,0.65)",
-          1.7,
-          1.2
+          normal,
+          worldLanes ? "rgba(226,232,240,0.9)" : "rgba(226,232,240,0.95)",
+          worldLanes ? "rgba(226,232,240,0.55)" : "rgba(226,232,240,0.65)",
+          worldLanes ? 1.6 : 1.7,
+          worldLanes ? 1.15 : 1.2
         );
+        // 当前 LCC 车道中心线高亮
+        for (const m of egoCenter) {
+          drawPolyLine(m.points as [number, number][], "rgba(52,211,153,0.95)", 2.4);
+        }
       } else {
         drawPolyLine(snapshot.lane_left as [number, number][] | undefined, "rgba(148,163,184,0.75)", 1.2);
         drawPolyLine(snapshot.lane_right as [number, number][] | undefined, "rgba(148,163,184,0.75)", 1.2);
       }
-      drawPolyLine(snapshot.path as [number, number][] | undefined, "rgba(96,165,250,0.85)", 1.5);
+      // 控制/变道过渡轨迹
+      const lcState = snapshot.lane_change?.state;
+      drawPolyLine(
+        snapshot.path as [number, number][] | undefined,
+        lcState && lcState !== "idle" ? "rgba(251,191,36,0.95)" : "rgba(96,165,250,0.85)",
+        lcState && lcState !== "idle" ? 2.4 : 1.5
+      );
 
       const drawTrail = (pts: [number, number][], color: string, dash?: number[]) => {
         if (pts.length < 2) return;
@@ -869,14 +904,18 @@ export function BirdEyeCanvas({
         }
         lat = best;
       }
+      const accel =
+        typeof snapshot.accel === "number" && Number.isFinite(snapshot.accel)
+          ? snapshot.accel
+          : 0;
       const lines = [
         `时间 ${snapshot.t.toFixed(2)} s · 自动驾驶 ${adStateZh(snapshot.state)}${paused ? " · 【已暂停】" : ""}`,
-        `车速 ${ego.speed.toFixed(2)} · 目标速 ${snapshot.v_cmd.toFixed(2)} · 限速 ${limit}`,
+        `车速 ${ego.speed.toFixed(2)} · 目标速 ${snapshot.v_cmd.toFixed(2)} · 加速度 ${accel.toFixed(2)} m/s² · 限速 ${limit}`,
         accLine,
         `道路朝上 · 横向偏差 ${lat.toFixed(2)}m · 缩放 ${zoom.toFixed(1)}× · ${numLanes}×${laneW.toFixed(1)}m`,
       ];
       ctx.fillStyle = "rgba(15,20,25,0.78)";
-      ctx.fillRect(12, 12, 480, 88);
+      ctx.fillRect(12, 12, 560, 88);
       ctx.fillStyle = "#e2e8f0";
       ctx.font = "500 12px 'IBM Plex Mono', 'PingFang SC', monospace";
       lines.forEach((line, i) => ctx.fillText(line, 22, 34 + i * 18));

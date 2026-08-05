@@ -12,26 +12,35 @@ from sim_server.scene_schema import (
     RouteLinkIn,
     list_presets,
     urban_scene_config,
+    urban_turns_scene_config,
 )
 from sim_server.session import SimSession
 from sim_server.app import app
 from map.demo_routes import build_urban_turn_route
 
 
-def test_default_scene_is_acc_highway():
+def test_default_scene_is_highway_lcc():
     cfg = default_scene_config()
     route = cfg.to_route()
-    assert route.route_id == "acc_highway"
-    assert len(route.links) >= 2
+    assert route.route_id == "highway_lcc"
+    assert cfg.lane_map_id == "highway_3lane"
+    assert cfg.start_lane_index == 2
     assert cfg.obstacles
+
+
+def test_acc_highway_preset_still_available():
+    cfg = acc_scene_config()
+    assert cfg.route_id == "acc_highway"
     assert cfg.obstacles[0].dynamic
-    assert cfg.obstacles[0].motion is not None
     assert cfg.obstacles[0].motion.type == "scripted"
 
 
-def test_urban_scene_still_available():
-    cfg = urban_scene_config()
-    route = cfg.to_route()
+def test_urban_arterial_and_turns_available():
+    urban = urban_scene_config()
+    assert urban.route_id == "urban_arterial"
+    assert urban.lane_map_id == "urban_arterial"
+    turns = urban_turns_scene_config()
+    route = turns.to_route()
     assert route.route_id == "urban_turns"
     classes = {lk.road_class for lk in route.links}
     maneuvers = {lk.maneuver for lk in route.links}
@@ -75,7 +84,7 @@ def test_session_step_json_snapshot():
 
 def test_session_reset_applies_draft():
     sess = SimSession(default_scene_config())
-    draft = urban_scene_config()
+    draft = urban_turns_scene_config()
     draft.links[0].speed_limit = 5.0
     sess.set_draft(draft)
     sess.reset()
@@ -89,12 +98,15 @@ def test_api_scene_and_control():
     assert r.status_code == 200
     body = r.json()
     assert "draft" in body
-    assert body["draft"]["route_id"] == "acc_highway"
+    assert body["draft"]["route_id"] == "highway_lcc"
 
     r = client.get("/api/presets")
     assert r.status_code == 200
     presets = r.json()
+    assert "highway_lcc" in presets["scenes"]
+    assert "highway_aeb" in presets["scenes"]
     assert "acc_highway" in presets["scenes"]
+    assert "urban_arterial" in presets["scenes"]
     assert "urban_turns" in presets["scenes"]
     assert "simple" in presets["scenes"]
 
@@ -132,8 +144,12 @@ def test_session_snapshot_has_multilane_and_heading_up():
     assert snap.get("num_lanes") == 3
     assert snap.get("lane_markings")
     assert snap.get("view", {}).get("mode") == "heading_up"
-    # 最外侧边界约为 ±1.5 * 3.2
-    assert abs(snap["lane_left"][0][1] - 4.8) < 0.2
+    # highway_3lane：世界系标线；旧 path 居中模式才有 lane_left ≈ ±4.8
+    if snap.get("use_world_lanes"):
+        assert snap.get("ego_lane_id")
+        assert any(m.get("role") == "ego_lane_center" for m in snap["lane_markings"])
+    else:
+        assert abs(snap["lane_left"][0][1] - 4.8) < 0.2
 
 
 def test_dynamic_obstacle_requires_motion():

@@ -49,11 +49,12 @@ export type ControlAction =
   | "step_next"
   | "seek"
   | "activate"
-  | "deactivate";
+  | "deactivate"
+  | "lane_change";
 
 export async function postControl(
   action: ControlAction,
-  extra?: { frame_i?: number }
+  extra?: { frame_i?: number; direction?: "left" | "right" }
 ): Promise<{ status: StatusPayload; frame?: unknown }> {
   const data = await jsonOrThrow(
     await fetch("/api/control", {
@@ -73,8 +74,9 @@ export function simWsUrl(): string {
   return `${proto}://${window.location.host}/ws/sim`;
 }
 
-export async function fetchBasemap(): Promise<BaseMapData> {
-  return jsonOrThrow(await fetch("/api/basemap"));
+export async function fetchBasemap(mapId?: string): Promise<BaseMapData> {
+  const q = mapId ? `?map_id=${encodeURIComponent(mapId)}` : "";
+  return jsonOrThrow(await fetch(`/api/basemap${q}`));
 }
 
 export async function postRoutePlan(body: {
@@ -84,6 +86,7 @@ export async function postRoutePlan(body: {
   end?: [number, number];
   duration_s?: number;
   clear_obstacles?: boolean;
+  map_id?: string;
 }): Promise<{
   ok: boolean;
   length_m: number;

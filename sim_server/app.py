@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from config import DT
-from map.demo_base_map import default_base_map
+from map.demo_lane_maps import get_base_map, get_lane_map, list_map_catalog
 from map.router import plan_route, route_length
 from .scene_schema import (
     SceneConfig,
@@ -42,8 +42,10 @@ class ControlBody(BaseModel):
         "seek",
         "activate",
         "deactivate",
+        "lane_change",
     ]
     frame_i: int | None = None
+    direction: Literal["left", "right"] | None = None
 
 
 class RoutePlanBody(BaseModel):
@@ -55,6 +57,7 @@ class RoutePlanBody(BaseModel):
     end: Tuple[float, float] | None = None
     duration_s: float = 30.0
     clear_obstacles: bool = True
+    map_id: str | None = None
 
 
 def get_session() -> SimSession:
@@ -149,15 +152,32 @@ async def get_presets() -> Dict[str, Any]:
 
 
 @app.get("/api/basemap")
-async def get_basemap() -> Dict[str, Any]:
-    """教学底图（节点/边），供前端点选起终点。"""
-    return default_base_map().to_dict()
+async def get_basemap(map_id: str | None = None) -> Dict[str, Any]:
+    """教学底图（节点/边 + 可选车道级摘要）。"""
+    mid = map_id or "campus_grid"
+    base = get_base_map(mid)
+    data = base.to_dict()
+    lane_map = get_lane_map(mid)
+    if lane_map is not None:
+        data["lanes"] = lane_map.to_dict()["lanes"]
+        data["junctions"] = lane_map.to_dict()["junctions"]
+        data["lane_markings"] = lane_map.markings_payload()
+        data["has_lane_map"] = True
+    else:
+        data["has_lane_map"] = False
+    data["catalog"] = list_map_catalog()
+    return data
+
+
+@app.get("/api/maps")
+async def get_maps() -> Dict[str, Any]:
+    return {"maps": list_map_catalog()}
 
 
 @app.post("/api/route/plan")
 async def post_route_plan(body: RoutePlanBody) -> Dict[str, Any]:
     """底图最短路 → 写入 draft 场景路线（不清空则保留障碍）。"""
-    base = default_base_map()
+    base = get_base_map(body.map_id)
     try:
         route = plan_route(
             base,
@@ -169,6 +189,7 @@ async def post_route_plan(body: RoutePlanBody) -> Dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    lane_map = get_lane_map(base.map_id)
     async with _lock:
         obstacles = [] if body.clear_obstacles else list(_session.draft_config.obstacles)
         scene = SceneConfig(
@@ -177,6 +198,8 @@ async def post_route_plan(body: RoutePlanBody) -> Dict[str, Any]:
             obstacles=obstacles,
             duration_s=float(body.duration_s),
             base_map_id=base.map_id,
+            lane_map_id=base.map_id if lane_map is not None else None,
+            start_lane_index=1,
         )
         try:
             scene.to_route()
@@ -241,6 +264,11 @@ async def control(body: ControlBody) -> Dict[str, Any]:
             snap = _session.current_snapshot()
         elif body.action == "deactivate":
             _session.request_deactivate()
+            snap = _session.current_snapshot()
+        elif body.action == "lane_change":
+            if body.direction is None:
+                raise HTTPException(status_code=400, detail="lane_change 需要 direction=left|right")
+            _session.request_lane_change(body.direction)
             snap = _session.current_snapshot()
         _ensure_loop()
         status = _session.status_payload()

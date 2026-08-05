@@ -1,30 +1,32 @@
 # AutoSim — 自动驾驶仿真框架
 
-Python 实现的模块化自动驾驶仿真原型，涵盖状态机、物理仿真、多传感器感知融合与人机交互告警，采用事件总线解耦各模块。
+Python 实现的模块化自动驾驶仿真原型，涵盖状态机、物理仿真、多传感器感知融合与人机交互告警，采用事件总线解耦各模块。Web 端提供实时鸟瞰、场景编辑与 HMI 提示。
 
 ## 项目结构
 
 ```
 PythonProject/
-├── main.py                 # 仿真主入口
+├── main.py                 # CLI 仿真主入口
+├── run_web.py              # Web 一键启动（构建前端 + uvicorn）
 ├── config/                 # 全局共享配置（步长、状态枚举、HMI 等级）
 ├── framework/              # 核心框架（状态机、事件总线）
 ├── simulator/              # 物理仿真（自行车模型、障碍物、参考路径）
 ├── perception/             # 感知（激光雷达 / 摄像头模拟 + 融合）
 ├── hmi/                    # 人机交互告警管理
 ├── control/                # Pure Pursuit 横向跟踪 + 纵向速度 P 控制
-├── planning/               # 路径密化 + 纵向目标车速规划
-├── visualize/              # matplotlib 鸟瞰渲染（车辆/路径/预瞄/障碍）
+├── planning/               # 路径密化 + 纵向目标车速规划（ACC）
+├── visualize/              # matplotlib 鸟瞰渲染
 ├── localization/           # 自行车模型 EKF 定位（GPS + 里程计）
-├── prediction/             # 恒速障碍预测（跟踪 + 短时外推）
-├── map/                    # 路线下发（Link/Route）与限速查询
+├── prediction/             # 恒速障碍预测
+├── map/                    # Route/Link、车道级 LaneMap、教学底图、算路
+├── safety/                 # FCW / AEB 纵向安全
 ├── sim_server/             # FastAPI + SimSession（Web 推流 / 场景 API）
-├── web/                    # Vite + React 鸟瞰与配置面板
+├── web/                    # Vite + React 鸟瞰、配置、HMI、时间轴
 ├── tests/                  # 单元测试
-├── docs/                   # 开发总结等文档
+├── docs/                   # 开发总结
 ├── HANDOFF.md              # 交接文档（继续开发请先读）
-├── project_scaffold.py     # 项目脚手架生成脚本
-└── scaffold_config.json    # 完整 AD 栈目录规划
+├── CHANGELOG.md            # 面向用户的变更记录
+└── project_scaffold.py     # 项目脚手架
 ```
 
 ## 配置说明
@@ -45,104 +47,105 @@ PythonProject/
 | `prediction/config.py` | 预测时域、关联距离、coast、速度阈值 |
 | `map/config.py` | 前方限速前瞻距离、link 衔接容差 |
 
-> 根目录遗留的 `config.py` 已移除；Python 统一从 `config/` 包导入全局配置。
-
 ## 已实现模块
 
-- **framework** — 五态状态机（OFF → PASSIVE → STANDBY → ACTIVE → OVERRIDE）+ 发布/订阅事件总线
-- **simulator** — 运动学自行车模型（后轴中心）、三车道×3.2m、车宽 1.96m、静态/脚本动态障碍
-- **perception** — 激光雷达与摄像头模拟（距离/FOV 过滤、噪声、类别识别）及空间匹配融合
-- **hmi** — 订阅 `hmi_alert` 主题，分级告警管理
-- **control** — Pure Pursuit 路径跟踪 + 纵向速度 P 控制（已接入 `main.py`）
-- **planning** — 路径密化 + 时距 ACC（跟车 / cut-in / cut-out）+ 终点减速
-- **visualize** — matplotlib 鸟瞰（车头向上、三车道）：车辆、路径、预瞄、障碍、ACC HUD
-- **localization** — 4 状态 EKF（里程计预测 + 含噪 GPS）；规划/控制吃估计位姿，感知吃真值
-- **prediction** — 融合检测最近邻跟踪 + 恒速短时预测，供 TrajPlanner 前瞻减速
-- **map** — Route/Link 限速路线；教学底图 + 起终点最短路算路并下发导航
-- **sim_server / web** — 实时鸟瞰 + 画布编路线/放障碍/底图算路；默认预设「跟车/Cut-in/Cut-out」
+- **framework** — 五态状态机（OFF → PASSIVE → STANDBY → ACTIVE → OVERRIDE）+ 事件总线  
+- **simulator** — 运动学自行车模型（后轴中心）、三车道、静态/脚本动态障碍  
+- **perception** — 激光雷达与摄像头模拟及空间匹配融合  
+- **hmi** — 订阅 `hmi_alert`；标准文言（激活 / 退出 / 限速）；写入 `snapshot.hmi`  
+- **control** — Pure Pursuit + 纵向 P 控制；预瞄轨迹可供 Web 绘制  
+- **planning** — 路径密化 + 时距 ACC（保险杠净空、垂距本车道）+ 终点减速  
+- **visualize** — matplotlib 鸟瞰（车头向上、三车道）  
+- **localization** — 4 状态 EKF；规划吃估计，横向控制吃真值（教学稳定）  
+- **prediction** — 融合检测跟踪 + 恒速短时预测  
+- **map** — Route/Link 限速；**LaneMap** 车道级拓扑；`highway_3lane` / `urban_arterial` / `campus_grid`  
+- **safety** — FCW / AEB（TTC + 净空，盖写纵向）  
+- **sim_server / web** — 实时鸟瞰、画布编辑、算路、时间轴、手动激活、拨杆变道、HMI  
 
 ## 规划中 / 下一步
 
-主栈模块已按 `scaffold_config.json` 落地。近期优先（见 `HANDOFF.md`）：
+详见 [`HANDOFF.md`](HANDOFF.md)：OVERRIDE/TOR、告警自动消失、路口拼接、感知闭环 ACC 等（P2–P5）。
 
-1. 算路体验打磨（边高亮、多底图、转弯注解）  
-2. Web 脚本障碍简易编辑  
+### 已具备的教学 L2 能力（2026-08-05）
+
+- **车道级底图** `highway_3lane` / `urban_arterial`（Lane 邻接、虚实线、successor）
+- **LCC** 跟当前车道中心线 + **拨杆变道**
+- **FCW / AEB** 独立纵向安全通道
+- **ACC** 时距跟车 / cut-in（预设 `acc_highway`）
 
 ## 文档
 
-- [HANDOFF.md](HANDOFF.md) — 交接与继续开发指引（**明天先读**）
+- [docs/auto_sim_learning.md](docs/auto_sim_learning.md) — **模块学习手册**（架构图 / 原理 / 核心逻辑 / 数据接口，面向初学者）
+- [HANDOFF.md](HANDOFF.md) — 交接与继续开发指引
+- [CHANGELOG.md](CHANGELOG.md) — 变更摘要
+- [docs/SUMMARY_2026-08-05_daily.md](docs/SUMMARY_2026-08-05_daily.md) — 2026-08-05 收工总览（L2 P1 + UX）
+- [docs/SUMMARY_2026-08-05_l2_p1.md](docs/SUMMARY_2026-08-05_l2_p1.md) — LaneMap / LCC / 变道 / AEB
 - [docs/SUMMARY_2026-08-02_daily.md](docs/SUMMARY_2026-08-02_daily.md) — 2026-08-02 收工总览
+- [docs/SUMMARY_2026-08-02_web_hmi.md](docs/SUMMARY_2026-08-02_web_hmi.md) — Web / 手动激活 / HMI
 - [docs/SUMMARY_2026-08-01_acc_viz.md](docs/SUMMARY_2026-08-01_acc_viz.md) — ACC / 三车道 / 鸟瞰
 - [docs/SUMMARY_2026-08-01_daily.md](docs/SUMMARY_2026-08-01_daily.md) — 2026-08-01 日收工总览
 - [docs/SUMMARY_2026-08-01_web_viz.md](docs/SUMMARY_2026-08-01_web_viz.md) — Web 实时渲染与场景配置
 - [docs/SUMMARY_2026-08-01_simulator.md](docs/SUMMARY_2026-08-01_simulator.md) — 车道/后轴几何
-- [docs/SUMMARY_2026-08-01_map.md](docs/SUMMARY_2026-08-01_map.md) — map 模块开发总结
-- [docs/SUMMARY_2026-08-01_prediction.md](docs/SUMMARY_2026-08-01_prediction.md) — prediction 模块开发总结
-- [docs/SUMMARY_2026-08-01_localization.md](docs/SUMMARY_2026-08-01_localization.md) — localization / EKF 开发总结
-- [docs/SUMMARY_2026-08-01_visualize.md](docs/SUMMARY_2026-08-01_visualize.md) — visualize 模块开发总结
-- [docs/SUMMARY_2026-08-01_planning.md](docs/SUMMARY_2026-08-01_planning.md) — planning 模块开发总结与算法原理
-- [docs/SUMMARY_2026-07-31_control.md](docs/SUMMARY_2026-07-31_control.md) — control 模块开发总结与算法原理
-
-运行脚手架可创建空目录占位：
-
-```bash
-python project_scaffold.py
-```
+- [docs/SUMMARY_2026-08-01_map.md](docs/SUMMARY_2026-08-01_map.md) — map 模块
+- [docs/SUMMARY_2026-08-01_prediction.md](docs/SUMMARY_2026-08-01_prediction.md) — prediction 模块
+- [docs/SUMMARY_2026-08-01_localization.md](docs/SUMMARY_2026-08-01_localization.md) — localization / EKF
+- [docs/SUMMARY_2026-08-01_visualize.md](docs/SUMMARY_2026-08-01_visualize.md) — visualize 模块
+- [docs/SUMMARY_2026-08-01_planning.md](docs/SUMMARY_2026-08-01_planning.md) — planning 模块
+- [docs/SUMMARY_2026-07-31_control.md](docs/SUMMARY_2026-07-31_control.md) — control 模块
 
 ## 环境要求
 
 - Python 3.10+（已在 3.14 下验证）
-- 核心仿真、EKF、预测无第三方数值库依赖；CLI 鸟瞰需要 `matplotlib`；Web 需要 `fastapi`/`uvicorn` 与 Node.js（构建 `web/`）
-- 关闭 CLI 窗口渲染：将 `visualize/config.py` 中 `ENABLE_VISUALIZE` 设为 `False`
-- Web：`python -m sim_server`，开发时另开 `cd web && npm run dev`；生产先 `npm run build`
-- 变更记录见 [CHANGELOG.md](CHANGELOG.md)
+- 核心仿真无强制数值库；CLI 鸟瞰需要 `matplotlib`；Web 需要 `fastapi` / `uvicorn` 与 Node.js（构建 `web/`）
+- 关闭 CLI 窗口渲染：`visualize/config.py` 中 `ENABLE_VISUALIZE = False`
+- Web：`python run_web.py`；前端有改动加 `--rebuild`；**改 Python 后必须重启进程**
 
 ## 快速开始
 
 ```bash
-# 创建并激活虚拟环境
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
-
-# 安装依赖
 pip install -r requirements.txt
 
-# CLI 仿真（matplotlib 鸟瞰）
+# CLI 仿真（matplotlib）
 python main.py
 
-# Web 仿真（一键：自动用 .venv；必要时 npm build；开服务并打开浏览器）
+# Web 仿真（推荐）
 python run_web.py
-# 或: ./run_web.sh
 # 前端有改动: python run_web.py --rebuild
+# 端口占用: lsof -ti:8000 | xargs kill -9
 
-# 运行全部测试
 pytest
 ```
 
-也可不安装 pytest，直接运行单个测试文件：
+## Web 演示流程（推荐）
 
-```bash
-PYTHONPATH=. python tests/test_state_machine.py
-```
+1. `python run_web.py --rebuild`，浏览器打开提示的地址  
+2. 预设选「高速：LCC + 拨杆变道」或「高速：FCW / AEB」（也可算路/编路线）  
+3. 点「开始」→ 约 t≥2.5s 进入 **待机(STANDBY)**  
+4. 车速接近可激活区间后点「**激活**」→ HMI 提示「功能已激活」  
+5. LCC：观察跟车道；「左/右变道」或 `[` / `]` 拨杆变道；AEB 预设看 FCW→紧急制动  
+6. 「暂停」后可拖 **时间轴** 或 ←/→ 逐帧回看  
 
-## 仿真流程
+## CLI 仿真流程（`main.py`）
 
-`main.py` 默认运行 20 秒闭环仿真：
+默认约 20 秒闭环（CLI 仍可能按旧逻辑演示；**Web 路径以手动激活为准**）：
 
-1. t=0.5s 上电（OFF → PASSIVE）
-2. t=2.5s 自检通过（PASSIVE → STANDBY）
-3. STANDBY 阶段加速，车速 ≥ 5 m/s 时激活 AD（STANDBY → ACTIVE）
-4. 启动时下发 demo Route（多段不同限速）；PathPlanner 密化 waypoints
-5. 每帧感知融合 → ObstaclePredictor；`MapManager.get_speed_limit_ahead` + 预测/障碍 → TrajPlanner
-6. ACTIVE 阶段用 EKF 估计位姿做 Pure Pursuit（基准速为地图限速，近终点/障碍再减速）
-7. 每帧 EKF 预测并按 GPS 周期融合含噪位置；鸟瞰显示真值、估计、预测与按限速着色的 route links
+1. t=0.5s 上电（OFF → PASSIVE）  
+2. t=2.5s 自检通过（PASSIVE → STANDBY）  
+3. STANDBY 加速；Web 上需点「激活」进入 ACTIVE  
+4. 感知融合 → 预测 → 限速/ACC → Pure Pursuit  
+5. EKF 定位；鸟瞰显示真值、估计、预测与 route  
 
 ## 状态机激活条件
 
-激活自动驾驶需同时满足：
+进入 **ACTIVE** 需同时满足：
 
 - 当前状态为 **STANDBY**
-- 车速在 **5.0 ~ 30.0 m/s** 范围内（见 `framework/config.py`）
+- 收到驾驶员激活请求（Web「激活」或 `action=activate`）
+- 车速在 **5.0 ~ 30.0 m/s**（见 `framework/config.py`）；未达速时可先请求，达速后自动切入  
+
+退出：**退出**按钮或 `action=deactivate`，或车速超出工作范围等事件 → STANDBY。
 
 ## 许可证
 
