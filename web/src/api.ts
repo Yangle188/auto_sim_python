@@ -50,11 +50,22 @@ export type ControlAction =
   | "seek"
   | "activate"
   | "deactivate"
-  | "lane_change";
+  | "lane_change"
+  | "tor"
+  | "override"
+  | "set_teaching"
+  | "hands_on";
 
 export async function postControl(
   action: ControlAction,
-  extra?: { frame_i?: number; direction?: "left" | "right" }
+  extra?: {
+    frame_i?: number;
+    direction?: "left" | "right";
+    use_truth_leads?: boolean;
+    use_est_pose_lateral?: boolean;
+    hands_off_warn_s?: number;
+    hands_off_tor_s?: number;
+  }
 ): Promise<{ status: StatusPayload; frame?: unknown }> {
   const data = await jsonOrThrow(
     await fetch("/api/control", {

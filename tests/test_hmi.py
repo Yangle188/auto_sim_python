@@ -61,9 +61,38 @@ def test_unsubscribe_on_destroy():
     print("✅ 取消订阅销毁测试通过")
 
 
+def test_display_priority_and_auto_clear():
+    """Toast：高等级优先；INFO 超时后回落到仍可见的告警。"""
+    from hmi.config import ALERT_AUTO_CLEAR_S, ALERT_STICKY_CLEAR_S
+
+    bus = EventBus()
+    hmi = HMIManager(bus)
+    hmi.add_alert(HMI_INFO, "限速切换", code="speed_limit", t=0.0)
+    hmi.add_alert(HMI_ALERT, "请立即接管", code="tor", t=1.0)
+
+    disp = hmi.get_display_alert(now=2.0)
+    assert disp is not None
+    assert disp["code"] == "tor"
+    payload = hmi.to_payload("ACTIVE", now=2.0)
+    assert payload["latest"]["code"] == "tor"
+    assert payload["highest"] == HMI_ALERT
+    assert len(payload["alerts"]) == 2
+
+    now_info_gone = ALERT_AUTO_CLEAR_S + 1.5
+    assert now_info_gone < ALERT_STICKY_CLEAR_S + 1.0
+    disp2 = hmi.get_display_alert(now=now_info_gone)
+    assert disp2 is not None and disp2["code"] == "tor"
+
+    now_all_gone = 1.0 + ALERT_STICKY_CLEAR_S + 0.5
+    assert hmi.get_display_alert(now=now_all_gone) is None
+    assert len(hmi.get_active_alerts()) == 2
+    assert hmi.to_payload("ACTIVE", now=now_all_gone)["latest"] is None
+
+
 if __name__ == "__main__":
     test_add_and_get_alerts()
     test_highest_level()
     test_event_bus_integration()
     test_unsubscribe_on_destroy()
+    test_display_priority_and_auto_clear()
     print("\n🎉 HMI 管理器全部测试通过")

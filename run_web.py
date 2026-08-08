@@ -3,10 +3,10 @@
 一键启动 AutoSim Web：必要时构建前端，再启动 FastAPI 并打开浏览器。
 
 用法:
-  python run_web.py              # 有 dist 直接开；没有则 npm build
-  python run_web.py --rebuild    # 强制重新 build
-  python run_web.py --no-browser
-  python run_web.py --host 127.0.0.1 --port 8000
+  python3 run_web.py              # 有 dist 直接开；没有则 npm build
+  python3 run_web.py --rebuild    # 强制重新 build
+  python3 run_web.py --no-browser
+  python3 run_web.py --host 127.0.0.1 --port 8000
 """
 from __future__ import annotations
 

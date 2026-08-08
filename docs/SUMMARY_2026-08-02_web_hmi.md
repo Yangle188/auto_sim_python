@@ -69,7 +69,7 @@ state_change / 限速检测
 cd /Users/ricka/PycharmProjects/PythonProject
 source .venv/bin/activate
 pytest
-python run_web.py --rebuild
+python3 run_web.py --rebuild
 # 端口占用：lsof -ti:8000 | xargs kill -9
 ```
 

@@ -50,6 +50,12 @@ export interface SceneConfig {
   base_map_id?: string | null;
   lane_map_id?: string | null;
   start_lane_index?: number;
+  planned_maneuver?: string | null;
+  use_truth_leads?: boolean;
+  use_est_pose_lateral?: boolean;
+  nudge_enabled?: boolean;
+  hands_off_warn_s?: number;
+  hands_off_tor_s?: number;
 }
 
 export interface VehicleState {
@@ -124,6 +130,25 @@ export interface Snapshot {
     lane_index?: number | null;
   };
   aeb?: { mode?: string; d_gap?: number | null; ttc?: number | null };
+  tor_pending?: boolean;
+  prefer_maneuver?: string;
+  planned_maneuver?: string | null;
+  use_truth_leads?: boolean;
+  use_est_pose_lateral?: boolean;
+  nudge?: { state?: string; side?: string | null; enabled?: boolean };
+  dms?: {
+    hands_off_s?: number;
+    hands_off_warn_s?: number;
+    hands_off_tor_s?: number;
+    warned?: boolean;
+    tor_requested?: boolean;
+    tracking?: boolean;
+  };
+  junctions?: {
+    junction_id: string;
+    name?: string;
+    stop_lines: Point[][];
+  }[];
   vehicle_geom?: VehicleGeom;
   obstacles: { x: number; y: number; width: number; height: number }[];
   fused: { x: number; y: number; source?: string }[];
@@ -155,6 +180,21 @@ export interface StatusPayload {
   can_activate?: boolean;
   can_deactivate?: boolean;
   can_lane_change?: boolean;
+  can_tor?: boolean;
+  can_override?: boolean;
+  tor_pending?: boolean;
+  use_truth_leads?: boolean;
+  use_est_pose_lateral?: boolean;
+  can_hands_on?: boolean;
+  nudge?: { state?: string; side?: string | null; enabled?: boolean };
+  dms?: {
+    hands_off_s?: number;
+    hands_off_warn_s?: number;
+    hands_off_tor_s?: number;
+    warned?: boolean;
+    tor_requested?: boolean;
+    tracking?: boolean;
+  };
   lane_change?: {
     state?: string;
     ego_lane_id?: string;
@@ -195,4 +235,10 @@ export interface BaseMapData {
   nodes: BaseMapNode[];
   edges: BaseMapEdge[];
   lane_markings?: LaneMarking[];
+  junctions?: {
+    junction_id: string;
+    name?: string;
+    stop_lines: Point[][];
+  }[];
+  has_lane_map?: boolean;
 }

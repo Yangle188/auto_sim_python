@@ -191,7 +191,16 @@ class AEBController:
             return lx, ly, vx, vy, half
         lx = float(getattr(lead, "x", 0.0))
         ly = float(getattr(lead, "y", 0.0))
-        return lx, ly, 0.0, 0.0, self.lead_half
+        vx = float(getattr(lead, "vx", 0.0) or 0.0)
+        vy = float(getattr(lead, "vy", 0.0) or 0.0)
+        height = getattr(lead, "height", None)
+        length = getattr(lead, "length", None)
+        if height is not None or length is not None:
+            half = max(0.5, 0.5 * float(height if height is not None else length))
+        else:
+            half = self.lead_half
+        return lx, ly, vx, vy, half
+
 
     @staticmethod
     def _project(

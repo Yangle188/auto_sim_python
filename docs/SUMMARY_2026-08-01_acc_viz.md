@@ -38,7 +38,7 @@
 
 ```bash
 pytest   # 107 passed（以当前仓库为准）
-python run_web.py --rebuild
+python3 run_web.py --rebuild
 ```
 
 预设选「三车道：跟车 / Cut-in / Cut-out」，观察 HUD 的 ACC 行与目标车速变化。

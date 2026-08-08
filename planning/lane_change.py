@@ -56,6 +56,8 @@ class LaneChangeController:
     clear_lat: float = DEFAULT_CLEAR_LAT
     path_resolution: float = PATH_RESOLUTION
 
+    prefer_maneuver: Optional[str] = None  # straight|left|right；多 successor 时选链
+
     state: str = LC_IDLE
     ego_lane_id: str = ""
     target_lane_id: Optional[str] = None
@@ -71,6 +73,17 @@ class LaneChangeController:
         self.direction = ""
         self._path = []
         self._elapsed = 0.0
+
+    def set_prefer_maneuver(self, maneuver: Optional[str]) -> None:
+        m = (maneuver or "straight").lower()
+        if m not in ("straight", "left", "right", "merge", "diverge"):
+            m = "straight"
+        self.prefer_maneuver = m
+
+    def _chain(self, lane_id: str) -> List[str]:
+        return self.lane_map.follow_lane_chain(
+            lane_id, prefer_maneuver=self.prefer_maneuver or "straight"
+        )
 
     def set_lane_map(self, lane_map: LaneMap, ego_lane_id: str) -> None:
         self.lane_map = lane_map
@@ -123,9 +136,9 @@ class LaneChangeController:
         if not self._target_clear(target, ego_xy, leads):
             return LaneChangeResult(False, "occupied", "目标车道有车，无法变道")
 
-        chain = self.lane_map.follow_lane_chain(target.lane_id)
+        chain = self._chain(target.lane_id)
         target_line = self.lane_map.chain_centerline(chain)
-        ego_chain = self.lane_map.follow_lane_chain(self.ego_lane_id)
+        ego_chain = self._chain(self.ego_lane_id)
         ego_line = self.lane_map.chain_centerline(ego_chain)
         if len(target_line) < 2 or len(ego_line) < 2:
             return LaneChangeResult(False, "geometry", "车道几何不足")
@@ -169,7 +182,7 @@ class LaneChangeController:
             self.state = LC_IDLE
             return LaneChangeResult(False, "lost_target", "目标车道丢失", state=LC_IDLE)
 
-        chain = self.lane_map.follow_lane_chain(target.lane_id)
+        chain = self._chain(target.lane_id)
         target_line = self.lane_map.chain_centerline(chain)
         _, lat, _ = project_to_polyline(ego_xy[0], ego_xy[1], target_line)
 
@@ -228,7 +241,7 @@ class LaneChangeController:
                 self.state = LC_IDLE
                 return LaneChangeResult(False, "abort_done", state=LC_IDLE)
             ego_line = self.lane_map.chain_centerline(
-                self.lane_map.follow_lane_chain(ego_lane.lane_id)
+                self._chain(ego_lane.lane_id)
             )
             _, lat_e, _ = project_to_polyline(ego_xy[0], ego_xy[1], ego_line)
             if abs(lat_e) <= self.settle_lat or self._elapsed > self.timeout_s + 3.0:
@@ -262,7 +275,7 @@ class LaneChangeController:
         if self.ego_lane_id not in self.lane_map.lanes:
             return []
         return self.lane_map.chain_centerline(
-            self.lane_map.follow_lane_chain(self.ego_lane_id)
+            self._chain(self.ego_lane_id)
         )
 
     def _target_clear(
@@ -274,7 +287,7 @@ class LaneChangeController:
     ) -> bool:
         ahead = self.clear_ahead if ahead is None else ahead
         line = self.lane_map.chain_centerline(
-            self.lane_map.follow_lane_chain(target_lane.lane_id)
+            self._chain(target_lane.lane_id)
         )
         if len(line) < 2:
             return True

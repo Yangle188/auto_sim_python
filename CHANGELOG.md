@@ -2,6 +2,61 @@
 
 本文件记录 AutoSim（`PythonProject`）面向用户的变更摘要。
 
+## 2026-08-08
+
+### P-UI1：仪表簇 + 通道条
+
+- **InstrumentCluster** PIP（左下）：车速弧、限速/v*、AD 灯、ADAS 图标（LCC/ACC/FCW/AEB/Nudge/LC/Hands）、横向误差/d_gap/TTC、脱手进度条。
+- **ChannelStrip** 底栏：speed / v_cmd / accel / steer / d_gap / TTC / lat_err / hands_off；可折叠；Author 默认折、Review 默认开。
+- `data/selectors.ts` 统一派生指标（含客户端 lat_err）；仍用节流 `uiFrame`，不破坏 BirdEye 渲染隔离。
+
+### P-UI0：仿真台壳 + 渲染隔离
+
+- 工作模式 Author / Drive / Review；顶栏瘦身为 Transport；驾驶操作进 SideDock → Mission。
+- `SafetyBanner` 承接 FCW/AEB/TOR/脱手告警；Scene / Events 分 Tab。
+- **渲染隔离**：`BirdEyeViewport` 用 `frameRef` + `requestAnimationFrame`；WS 帧不触发视口 re-render。
+- **绘制纯函数**：`paint(ctx, camera, frameData, layerFlags)` 内按 flags 开关图层。
+- **事件穿透**：`ViewportHost` 随 SideDock 悬停切换 Canvas `pointer-events`。
+- 架构约束见 `docs/FRONTEND_SIM_UI_ARCHITECTURE.md` §5.3 / §12。
+
+### P6：感知驱动 AEB + 绕障/变道仲裁 + DMS 可配置
+
+- **AEB 与 ACC 共用 leads 开关**：`use_truth_leads=False` 时 AEB/FCW 走 `_perception_leads()`（预测优先，融合框回退）；顶栏文案改为「Leads·真值/感知」。
+- **绕障仲裁**：nudging 时同侧拨杆升格完整变道并 HMI「拨杆变道中断绕障」；反向拨杆拒绝（`nudge_conflict`）。
+- **DMS 可配置**：场景字段 `hands_off_warn_s` / `hands_off_tor_s`；`set_teaching` 可热改；Web ConfigPanel 数字输入 + 顶栏脱手进度条。
+- 测试：感知 AEB、nudge 仲裁、自定义脱手阈值；`pytest` 全量通过。
+
+## 2026-08-06
+
+### P5：绕障 nudge + DMS 脱手计时
+
+- **Nudge**：`planning/nudge.py` 对本车道静止障碍做短距横向弓形路径（非完整变道）；预设 `nudge_demo`；场景字段 `nudge_enabled`。
+- **DMS**：`safety/dms.py` ACTIVE 下累计脱手；约 6s 告警、12s 自动发 TOR；「双手在环」/快捷键 `H` 清零。
+- HMI code：`nudge` / `hands_off`；顶栏显示绕障侧与脱手秒数。
+
+### P4：感知闭环教学开关
+
+- 场景字段 `use_truth_leads`（默认 True）/ `use_est_pose_lateral`（默认 False）。
+- 关闭真值 leads 后 ACC 与变道间隙仅用感知融合+预测（P6 起 AEB 同步）。
+- 开启估计横向后 Pure Pursuit 吃 EKF 位姿（易画龙）；默认真值位姿保持稳定。
+- `POST /api/control` `action=set_teaching`；Web 顶栏与「教学闭环」配置可切换；HMI code=`teach`。
+
+### P3：场景打磨（路口左转 + 脚本关键帧编辑）
+
+- **路口拼接**：`urban_arterial` 增加左转连接道 `UR_TURN_EL_N` 与北向出口；中道多 successor（直行/左转）；鸟瞰绘制停车线。
+- **选链 / auto-maneuver**：`follow_lane_chain(prefer_maneuver=)`；场景字段 `planned_maneuver`；距进口道末端 &lt;40m 自动切链并 HMI 日志。
+- **预设**：`urban_left`（城市：路口左转）。
+- **脚本障碍编辑**：ConfigPanel 支持匀速/脚本切换与关键帧 CRUD；画布绘制关键帧折线。
+- **草稿角标**：draft≠applied 时面板与顶栏显示「草稿未应用」。
+
+### P2：驾驶员责任（告警 toast + TOR / OVERRIDE）
+
+- **HMI toast 优先级**：`snapshot.hmi.latest` 在时效窗口内按 INFO&lt;WARNING&lt;ALERT&lt;FAULT 选取，不再等于时间最新一条；事件日志 `alerts` 仍完整保留。
+- **自动消失**：INFO 5s / WARNING 8s / ALERT 15s / FAULT 30s（`hmi/config.py`）；过期后顶栏可「暂无提示」，日志仍在。
+- **TOR**：`POST /api/control` `action=tor`；Web「请求接管」；文言「请立即接管车辆」；`tor_pending` 状态位。
+- **OVERRIDE**：`action=override` + 快捷键 `O`；ACTIVE→OVERRIDE 后 AD 纵向/横向指令归零；「退出」可从 OVERRIDE→STANDBY。
+- 测试：`tests/test_override_tor.py`；HMI 优先级用例；`pytest` 约 137 passed。
+
 ## 2026-08-05
 
 ### L2 P1：车道级底图 + LCC + 拨杆变道 + FCW/AEB
@@ -101,8 +156,8 @@
 - 新增 `SimSession` + `SceneConfig`：仿真步进与场景注入从 `main` 抽离，snapshot JSON 化。
 - FastAPI：`/api/scene`、`/api/control`、WebSocket `/ws/sim` 实时推帧。
 - React（Vite）鸟瞰 Canvas + 路线/障碍配置面板；**Apply & Restart** 重开 episode。
-- CLI `python main.py` 仍走 matplotlib；入口 `python -m sim_server`。
-- 一键脚本：`python run_web.py` / `./run_web.sh`（必要时自动 build、启动服务并打开浏览器；**自动使用项目 `.venv`**）。
+- CLI `python3 main.py` 仍走 matplotlib；入口 `python3 -m sim_server`。
+- 一键脚本：`python3 run_web.py` / `./run_web.sh`（必要时自动 build、启动服务并打开浏览器；**自动使用项目 `.venv`**）。
 - 自定义路线：路段支持中文名 / 主辅路 / 机动（左/右转等）；默认「城市：左右转+主辅路」预设；Web 界面与鸟瞰 HUD/图例中文化。
 
 ### Map

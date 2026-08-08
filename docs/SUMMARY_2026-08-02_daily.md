@@ -45,7 +45,7 @@
 cd /Users/ricka/PycharmProjects/PythonProject
 source .venv/bin/activate
 pytest
-python run_web.py --rebuild
+python3 run_web.py --rebuild
 ```
 
 ## 下一步（摘要）

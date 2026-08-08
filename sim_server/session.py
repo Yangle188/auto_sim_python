@@ -10,6 +10,7 @@ from config import (
     STATE_ACTIVE,
     STATE_STANDBY,
     STATE_PASSIVE,
+    STATE_OVERRIDE,
     HMI_INFO,
     HMI_WARNING,
     HMI_ALERT,
@@ -22,6 +23,7 @@ from framework.state_machine import (
     EV_SELF_CHECK_OK,
     EV_ACTIVATE,
     EV_DEACTIVATE,
+    EV_DRIVER_OVERRIDE,
     EV_SPEED_OUT_OF_RANGE,
 )
 from hmi.hmi_manager import (
@@ -40,6 +42,12 @@ from hmi.hmi_manager import (
     CODE_SCENE,
     CODE_LCC,
     CODE_ENGAGE,
+    CODE_TOR,
+    CODE_OVERRIDE,
+    CODE_AUTO_MANEUVER,
+    CODE_TEACH,
+    CODE_NUDGE,
+    CODE_HANDS_OFF,
 )
 from framework.config import (
     ACTIVE_LOW_SPEED_THRESHOLD,
@@ -57,6 +65,7 @@ from control.config import STANDBY_ACC
 from planning.path_planner import PathPlanner
 from planning.traj_planner import TrajPlanner
 from planning.lane_change import LaneChangeController, LC_IDLE, LC_CHANGING, LC_ABORTING
+from planning.nudge import NudgeController, NUDGE_ACTIVE
 from localization.ekf_localizer import EKFLocalizer
 from localization.config import GPS_PERIOD
 from prediction.predictor import ObstaclePredictor
@@ -64,9 +73,11 @@ from map.map_manager import MapManager
 from map.link import Link
 from map.route import Route
 from map.demo_lane_maps import get_base_map, get_lane_map
-from map.lane_map import LaneMap, lanes_from_centerline
+from map.lane_map import LaneMap, lanes_from_centerline, project_to_polyline
+from map.config import AUTO_MANEUVER_DIST
 from map.road_viz import base_map_lane_markings
 from safety.aeb import AEBController, MODE_AEB, MODE_FCW, MODE_NONE
+from safety.dms import HandsOffMonitor
 
 from .scene_schema import SceneConfig, default_scene_config, evaluate_motion
 
@@ -262,7 +273,75 @@ class SimSession:
         }
 
     def request_deactivate(self) -> Dict[str, Any]:
-        """驾驶员主动退出 ACTIVE → STANDBY。"""
+        """驾驶员主动退出 ACTIVE/OVERRIDE → STANDBY。"""
+        state = self.state_machine.get_state()
+        if state not in (STATE_ACTIVE, STATE_OVERRIDE):
+            return {
+                "ok": False,
+                "ad_state": state,
+                "reason": "not_active_or_override",
+            }
+        speed = float(self.localizer.get_state().get("speed", 0.0))
+        ok = self.state_machine.transit(EV_DEACTIVATE, vehicle_speed=speed)
+        if ok:
+            self._ad_engage_pending = False
+            self._tor_pending = False
+            if hasattr(self, "lane_change"):
+                self.lane_change.reset(self.lane_change.ego_lane_id)
+            if getattr(self, "nudge", None) is not None:
+                self.nudge.reset()
+            if getattr(self, "dms", None) is not None:
+                self.dms.reset()
+            self._sync_ad_state_into_view()
+        return {
+            "ok": ok,
+            "ad_state": self.state_machine.get_state(),
+            "reason": None if ok else "transit_failed",
+        }
+
+    def request_tor(self) -> Dict[str, Any]:
+        """
+        系统发出接管请求 TOR（Take-Over Request）。
+        仅 ACTIVE 有效；不自动切 OVERRIDE，需驾驶员点「接管」。
+        """
+        if self.state_machine.get_state() != STATE_ACTIVE:
+            return {
+                "ok": False,
+                "pending": bool(getattr(self, "_tor_pending", False)),
+                "ad_state": self.state_machine.get_state(),
+                "reason": "not_active",
+            }
+        if not self._tor_pending:
+            self._sim_log(
+                CODE_TOR,
+                "请立即接管车辆（系统请求 TOR）",
+                level=HMI_ALERT,
+            )
+        self._tor_pending = True
+        self._sync_ad_state_into_view()
+        return {
+            "ok": True,
+            "pending": True,
+            "ad_state": self.state_machine.get_state(),
+            "reason": None,
+        }
+
+    def request_hands_on(self) -> Dict[str, Any]:
+        """驾驶员确认双手在环，清零脱手计时。"""
+        dms = getattr(self, "dms", None)
+        if dms is None:
+            return {"ok": False, "reason": "no_dms"}
+        dms.hands_on()
+        self._sim_log(CODE_HANDS_OFF, "双手在环，脱手计时已清零")
+        self._sync_ad_state_into_view()
+        return {
+            "ok": True,
+            "dms": dms.status_payload(),
+            "ad_state": self.state_machine.get_state(),
+        }
+
+    def request_override(self) -> Dict[str, Any]:
+        """驾驶员接管：ACTIVE → OVERRIDE，AD 纵向/横向退出控制。"""
         if self.state_machine.get_state() != STATE_ACTIVE:
             return {
                 "ok": False,
@@ -270,11 +349,16 @@ class SimSession:
                 "reason": "not_active",
             }
         speed = float(self.localizer.get_state().get("speed", 0.0))
-        ok = self.state_machine.transit(EV_DEACTIVATE, vehicle_speed=speed)
+        ok = self.state_machine.transit(EV_DRIVER_OVERRIDE, vehicle_speed=speed)
         if ok:
+            self._tor_pending = False
             self._ad_engage_pending = False
             if hasattr(self, "lane_change"):
                 self.lane_change.reset(self.lane_change.ego_lane_id)
+            if getattr(self, "nudge", None) is not None:
+                self.nudge.reset()
+            if getattr(self, "dms", None) is not None:
+                self.dms.reset()
             self._sync_ad_state_into_view()
         return {
             "ok": ok,
@@ -284,17 +368,42 @@ class SimSession:
 
     def request_lane_change(self, direction: str) -> Dict[str, Any]:
         """拨杆变道请求（left / right）。"""
+        direction_norm = str(direction).lower().strip()
+        nudge = getattr(self, "nudge", None)
+        if (
+            nudge is not None
+            and nudge.state == NUDGE_ACTIVE
+            and nudge.side
+            and direction_norm in ("left", "right")
+            and direction_norm != nudge.side
+        ):
+            self._sim_log(
+                CODE_LC_REJECT,
+                "无法变道：绕障进行中，方向冲突",
+                level=HMI_WARNING,
+            )
+            self._sync_ad_state_into_view()
+            return {
+                "ok": False,
+                "reason": "nudge_conflict",
+                "msg": "绕障进行中，方向冲突",
+                "lane_change": self.lane_change.status_payload(),
+                "ad_state": self.state_machine.get_state(),
+                "nudge": nudge.status_payload(),
+            }
+
         true_state = self.world.vehicle.get_state()
         truth_leads = self._truth_leads()
+        leads = truth_leads if getattr(self, "_use_truth_leads", True) else []
         result = self.lane_change.request(
-            direction,
+            direction_norm,
             speed=float(true_state.get("speed", 0.0)),
             ego_xy=(float(true_state["x"]), float(true_state["y"])),
-            leads=truth_leads,
+            leads=leads,
             active=self.state_machine.get_state() == STATE_ACTIVE,
         )
         if result.ok:
-            side = "左" if direction.lower() == "left" else "右"
+            side = "左" if direction_norm == "left" else "右"
             from_id = self.lane_change.ego_lane_id
             to_id = result.target_lane_id or ""
             from_idx = self.lane_map.lanes[from_id].index if from_id in self.lane_map.lanes else "?"
@@ -323,17 +432,22 @@ class SimSession:
     def _sync_ad_state_into_view(self) -> None:
         """激活/退出瞬间同步到当前展示帧（暂停时不会立刻 step）。"""
         ad = self.state_machine.get_state()
-        hmi = self.hmi.to_payload(ad)
+        now = float(getattr(self, "sim_time", 0.0) or 0.0)
+        hmi = self.hmi.to_payload(ad, now=now)
         if self._frames and 0 <= self._view_i < len(self._frames):
             fr = dict(self._frames[self._view_i])
             fr["state"] = ad
             fr["hmi"] = hmi
+            fr["tor_pending"] = bool(getattr(self, "_tor_pending", False))
             self._frames[self._view_i] = fr
             self._last_snapshot = fr
         elif self._last_snapshot is not None:
             self._last_snapshot = dict(self._last_snapshot)
             self._last_snapshot["state"] = ad
             self._last_snapshot["hmi"] = hmi
+            self._last_snapshot["tor_pending"] = bool(
+                getattr(self, "_tor_pending", False)
+            )
 
     def _try_engage(self) -> bool:
         if self.state_machine.get_state() != STATE_STANDBY:
@@ -500,14 +614,102 @@ class SimSession:
             "scrubbing": bool(n and i >= 0 and i < n - 1),
             "ad_state": self.state_machine.get_state(),
             "ad_engage_pending": bool(self._ad_engage_pending),
+            "tor_pending": bool(getattr(self, "_tor_pending", False)),
             "can_activate": self.state_machine.get_state() == STATE_STANDBY,
-            "can_deactivate": self.state_machine.get_state() == STATE_ACTIVE,
+            "can_deactivate": self.state_machine.get_state()
+            in (STATE_ACTIVE, STATE_OVERRIDE),
+            "can_tor": self.state_machine.get_state() == STATE_ACTIVE,
+            "can_override": self.state_machine.get_state() == STATE_ACTIVE,
             "can_lane_change": self.state_machine.get_state() == STATE_ACTIVE
             and getattr(self, "lane_change", None) is not None
             and self.lane_change.state == LC_IDLE,
             "lane_change": self.lane_change.status_payload()
             if getattr(self, "lane_change", None) is not None
             else None,
+            "use_truth_leads": bool(getattr(self, "_use_truth_leads", True)),
+            "use_est_pose_lateral": bool(getattr(self, "_use_est_pose_lateral", False)),
+            "nudge": self.nudge.status_payload()
+            if getattr(self, "nudge", None) is not None
+            else None,
+            "dms": self.dms.status_payload()
+            if getattr(self, "dms", None) is not None
+            else None,
+            "can_hands_on": self.state_machine.get_state() == STATE_ACTIVE,
+        }
+
+    def set_teaching_flags(
+        self,
+        *,
+        use_truth_leads: Optional[bool] = None,
+        use_est_pose_lateral: Optional[bool] = None,
+        hands_off_warn_s: Optional[float] = None,
+        hands_off_tor_s: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """运行中切换教学闭环开关（无需重建场景）。"""
+        changed = []
+        if use_truth_leads is not None:
+            v = bool(use_truth_leads)
+            if v != bool(getattr(self, "_use_truth_leads", True)):
+                self._use_truth_leads = v
+                changed.append(
+                    "leads（ACC/AEB/变道间隙）使用真值"
+                    if v
+                    else "leads（ACC/AEB/变道间隙）改用感知融合+预测"
+                )
+        if use_est_pose_lateral is not None:
+            v = bool(use_est_pose_lateral)
+            if v != bool(getattr(self, "_use_est_pose_lateral", False)):
+                self._use_est_pose_lateral = v
+                changed.append(
+                    "横向控制改用估计位姿" if v else "横向控制改用真值位姿"
+                )
+        if hands_off_warn_s is not None or hands_off_tor_s is not None:
+            dms = getattr(self, "dms", None)
+            if dms is None:
+                return {
+                    "ok": False,
+                    "reason": "no_dms",
+                    "use_truth_leads": bool(getattr(self, "_use_truth_leads", True)),
+                    "use_est_pose_lateral": bool(
+                        getattr(self, "_use_est_pose_lateral", False)
+                    ),
+                    "changed": changed,
+                }
+            warn = (
+                float(hands_off_warn_s)
+                if hands_off_warn_s is not None
+                else float(dms.warn_s)
+            )
+            tor = (
+                float(hands_off_tor_s)
+                if hands_off_tor_s is not None
+                else float(dms.tor_s)
+            )
+            try:
+                if warn != float(dms.warn_s) or tor != float(dms.tor_s):
+                    dms.set_thresholds(warn, tor)
+                    changed.append(f"脱手阈值 → 告警 {warn:.1f}s / TOR {tor:.1f}s")
+            except ValueError:
+                return {
+                    "ok": False,
+                    "reason": "invalid_dms_thresholds",
+                    "msg": "hands_off 阈值须满足 0 < warn < tor",
+                    "use_truth_leads": bool(self._use_truth_leads),
+                    "use_est_pose_lateral": bool(self._use_est_pose_lateral),
+                    "dms": dms.status_payload(),
+                    "changed": changed,
+                }
+        for msg in changed:
+            self._sim_log(CODE_TEACH, msg)
+        if changed:
+            self._sync_ad_state_into_view()
+        dms = getattr(self, "dms", None)
+        return {
+            "ok": True,
+            "use_truth_leads": bool(self._use_truth_leads),
+            "use_est_pose_lateral": bool(self._use_est_pose_lateral),
+            "dms": dms.status_payload() if dms is not None else None,
+            "changed": changed,
         }
 
     def _teardown_hmi(self) -> None:
@@ -542,9 +744,27 @@ class SimSession:
         )
         self.lane_change = LaneChangeController(self.lane_map)
         self.lane_change.reset(start_lane_id)
+        planned = getattr(config, "planned_maneuver", None)
+        self._planned_maneuver = (
+            str(planned).lower()
+            if planned and str(planned).lower() in ("left", "right")
+            else None
+        )
+        # LCC 初始跟直行链；临近路口再由 _maybe_auto_maneuver 切换
+        self.lane_change.set_prefer_maneuver("straight")
+        self._use_truth_leads = bool(getattr(config, "use_truth_leads", True))
+        self._use_est_pose_lateral = bool(getattr(config, "use_est_pose_lateral", False))
+        self.nudge = NudgeController(
+            enabled=bool(getattr(config, "nudge_enabled", True))
+        )
+        self.dms = HandsOffMonitor(
+            warn_s=float(getattr(config, "hands_off_warn_s", 6.0)),
+            tor_s=float(getattr(config, "hands_off_tor_s", 12.0)),
+        )
         self.aeb = AEBController()
         self.aeb.reset()
         self._aeb_mode_prev = "none"
+        self._nudge_state_prev = "idle"
 
         # LCC：参考路径 = 当前车道链中心线
         lcc_path = self.lane_change.lcc_path()
@@ -591,7 +811,13 @@ class SimSession:
                     CODE_AD_ACTIVATE,
                     f"功能已激活 · LCC 车道{idx}（{lane}）",
                 )
-            elif old_state == STATE_ACTIVE and new_state == STATE_STANDBY:
+            elif old_state == STATE_ACTIVE and new_state == STATE_OVERRIDE:
+                self._sim_log(
+                    CODE_OVERRIDE,
+                    "驾驶员已接管，自动驾驶退出控制",
+                    level=HMI_WARNING,
+                )
+            elif old_state in (STATE_ACTIVE, STATE_OVERRIDE) and new_state == STATE_STANDBY:
                 self._sim_log(CODE_AD_EXIT, "功能已退出")
             else:
                 self._sim_log(
@@ -618,6 +844,8 @@ class SimSession:
         self._v_limit: Optional[float] = None
         # STANDBY→ACTIVE 需驾驶员主动请求；车速未就绪时挂起，就绪后切入
         self._ad_engage_pending = False
+        # TOR 已发出、等待驾驶员点「接管」
+        self._tor_pending = False
         self._prev_v_limit: Optional[float] = None
         self._prev_v_limit_known = False
         self._aeb_mode_prev = "none"
@@ -682,17 +910,56 @@ class SimSession:
             )
         return out
 
+    def _perception_leads(self) -> List[Dict[str, float]]:
+        """
+        感知闭环 leads：优先预测轨迹（含速度），否则融合框（静止）。
+        供 AEB / 教学对比；与 ACC 关闭真值后的信息源一致。
+        """
+        out: List[Dict[str, float]] = []
+        for pred in getattr(self, "predictions", None) or []:
+            if getattr(pred, "coasting", False):
+                continue
+            out.append(
+                {
+                    "x": float(pred.x),
+                    "y": float(pred.y),
+                    "vx": float(getattr(pred, "vx", 0.0) or 0.0),
+                    "vy": float(getattr(pred, "vy", 0.0) or 0.0),
+                    "width": float(getattr(pred, "width", 2.0) or 2.0),
+                    "height": float(getattr(pred, "height", 4.0) or 4.0),
+                }
+            )
+        if out:
+            return out
+        for obs in getattr(self, "fused_obstacles", None) or []:
+            out.append(
+                {
+                    "x": float(obs.x),
+                    "y": float(obs.y),
+                    "vx": 0.0,
+                    "vy": 0.0,
+                    "width": float(getattr(obs, "width", 2.0) or 2.0),
+                    "height": float(getattr(obs, "height", 4.0) or 4.0),
+                }
+            )
+        return out
+
     def _sync_nav_from_ego_lane(self) -> None:
         """变道完成后，把 MapManager 导航链切到当前 ego 车道，避免金黄导航线仍停在旧道。"""
         lane_id = self.lane_change.ego_lane_id
         if not lane_id or lane_id not in self.lane_map.lanes:
             return
-        chain = self.lane_map.follow_lane_chain(lane_id)
+        prefer = getattr(self.lane_change, "prefer_maneuver", None) or "straight"
+        chain = self.lane_map.follow_lane_chain(lane_id, prefer_maneuver=prefer)
         if not chain:
             return
         links = []
         for lid in chain:
             lane = self.lane_map.get(lid)
+            if "TURN" in lid or (lane.section_id or "").startswith("UR_TURN"):
+                man = prefer if prefer in ("left", "right") else "left"
+            else:
+                man = "straight"
             links.append(
                 Link(
                     lid,
@@ -700,13 +967,44 @@ class SimSession:
                     lane.speed_limit,
                     name=lane.name or lid,
                     road_class="main",
-                    maneuver="straight",
+                    maneuver=man,
                 )
             )
         try:
             self.map_mgr.set_route(Route(f"lcc_{chain[0]}", tuple(links)))
         except ValueError:
             pass
+
+    def _maybe_auto_maneuver(self, true_state: Dict[str, Any]) -> None:
+        """接近多出口车道末端时，按 planned_maneuver 切换 LCC 选链。"""
+        planned = getattr(self, "_planned_maneuver", None)
+        if not planned or planned == "straight":
+            return
+        if self.lane_change.state != LC_IDLE:
+            return
+        cur_pref = (self.lane_change.prefer_maneuver or "straight").lower()
+        if cur_pref == planned:
+            return
+        ego_id = self.lane_change.ego_lane_id
+        lane = self.lane_map.lanes.get(ego_id)
+        if lane is None or len(lane.successors) < 2:
+            return
+        s, _, _ = project_to_polyline(
+            float(true_state["x"]), float(true_state["y"]), lane.points
+        )
+        remain = float(lane.length) - float(s)
+        if remain > float(AUTO_MANEUVER_DIST):
+            return
+        self.lane_change.set_prefer_maneuver(planned)
+        path = self.lane_change.lcc_path()
+        if len(path) >= 2:
+            self.world.set_reference_path(path)
+        self._sync_nav_from_ego_lane()
+        side = "左" if planned == "left" else "右" if planned == "right" else planned
+        self._sim_log(
+            CODE_AUTO_MANEUVER,
+            f"接近路口，自动{side}转（剩余 {remain:.0f} m）",
+        )
 
     def _lane_display_payload(self, path: list) -> Dict[str, Any]:
         """
@@ -804,13 +1102,17 @@ class SimSession:
 
         self.predictions = self.predictor.step(self.fused_obstacles, DT)
         est_state = self.localizer.get_state()
+        # ACC / 变道：可选真值 leads；关闭后走感知+预测闭环
         truth_leads = self._truth_leads()
+        acc_leads = truth_leads if getattr(self, "_use_truth_leads", True) else []
+
+        self._maybe_auto_maneuver(true_state)
 
         # 变道状态推进 + LCC / 过渡路径
         lc_tick = self.lane_change.tick(
             DT,
             (float(true_state["x"]), float(true_state["y"])),
-            leads=truth_leads,
+            leads=acc_leads,
         )
         if lc_tick.reason == "completed":
             lane = self.lane_change.ego_lane_id
@@ -835,7 +1137,37 @@ class SimSession:
             self._sync_nav_from_ego_lane()
 
         override = self.lane_change.current_path_override()
-        raw_path = override if override else self.lane_change.lcc_path()
+        ad_state = self.state_machine.get_state()
+        if override:
+            raw_path = override
+            if getattr(self, "nudge", None) is not None:
+                if self.nudge.state == NUDGE_ACTIVE:
+                    self._sim_log(CODE_NUDGE, "拨杆变道中断绕障")
+                self.nudge.reset()
+        else:
+            lcc = self.lane_change.lcc_path()
+            nudge_ev = None
+            if getattr(self, "nudge", None) is not None:
+                nudge_ev = self.nudge.tick(
+                    active=ad_state == STATE_ACTIVE,
+                    lc_idle=self.lane_change.state == LC_IDLE,
+                    ego_xy=(float(true_state["x"]), float(true_state["y"])),
+                    lcc_path=lcc,
+                    leads=truth_leads,
+                    lane_map=self.lane_map,
+                    ego_lane_id=self.lane_change.ego_lane_id,
+                )
+                if nudge_ev and nudge_ev.startswith("start:"):
+                    side = "左" if nudge_ev.endswith("left") else "右"
+                    self._sim_log(CODE_NUDGE, f"绕障 nudge：向{side}侧横向偏移")
+                elif nudge_ev == "done":
+                    self._sim_log(CODE_NUDGE, "绕障完成，恢复 LCC")
+            nudged = (
+                self.nudge.current_path()
+                if getattr(self, "nudge", None) is not None
+                else None
+            )
+            raw_path = nudged if nudged else lcc
         if len(raw_path) < 2:
             raw_path = self.map_mgr.get_waypoints()
         path = self.path_planner.plan(raw_path)
@@ -852,12 +1184,15 @@ class SimSession:
         self._maybe_hmi_speed_limit(v_limit)
         acc = 0.0
         steer = 0.0
-        state = self.state_machine.get_state()
+        state = ad_state
         v_cmd = self.traj_planner.cruise_speed if v_limit is None else v_limit
 
-        # 横向控制用真值位姿：EKF 位置噪声会诱发 Pure Pursuit 画龙；
-        # 规划仍用估计；估计轨迹仅叠加显示。
-        ctrl_pose = true_state
+        # 横向：默认真值位姿（稳）；可选 EKF 估计以演示画龙
+        ctrl_pose = (
+            est_state
+            if getattr(self, "_use_est_pose_lateral", False)
+            else true_state
+        )
         if state == STATE_STANDBY:
             v_cmd = self.traj_planner.plan(
                 est_state,
@@ -865,7 +1200,7 @@ class SimSession:
                 self.fused_obstacles,
                 self.predictions,
                 speed_limit=v_limit,
-                leads=truth_leads,
+                leads=acc_leads,
             )
             if v_cmd >= self.traj_planner.cruise_speed - 1e-6:
                 _, steer = self.controller.compute(ctrl_pose, path)
@@ -881,18 +1216,28 @@ class SimSession:
                 self.fused_obstacles,
                 self.predictions,
                 speed_limit=v_limit,
-                leads=truth_leads,
+                leads=acc_leads,
             )
             acc, steer = self.controller.compute(ctrl_pose, path, target_speed=v_cmd)
+        elif state == STATE_OVERRIDE:
+            # 驾驶员接管：AD 不再输出纵向/横向；车速自然衰减（教学用）
+            v_cmd = float(true_state.get("speed", 0.0))
+            acc = 0.0
+            steer = 0.0
 
         if state in (STATE_ACTIVE, STATE_STANDBY):
             self._maybe_log_acc_lead()
 
-        # AEB / FCW 仲裁（ACTIVE 与 STANDBY 均可告警；制动盖写在 ACTIVE/STANDBY）
+        # AEB / FCW：与 ACC 共用 use_truth_leads（教学闭环）
+        aeb_leads = (
+            truth_leads
+            if getattr(self, "_use_truth_leads", True)
+            else self._perception_leads()
+        )
         aeb_res = self.aeb.evaluate(
             true_state,
             path,
-            leads=truth_leads,
+            leads=aeb_leads,
             enabled=state in (STATE_ACTIVE, STATE_STANDBY),
         )
         if aeb_res.mode != self._aeb_mode_prev:
@@ -969,6 +1314,24 @@ class SimSession:
                 )
 
         self.state_machine.step(DT)
+
+        # DMS 脱手计时（ACTIVE）
+        state = self.state_machine.get_state()
+        if getattr(self, "dms", None) is not None:
+            dms_ev = self.dms.tick(DT, active=state == STATE_ACTIVE)
+            if dms_ev == "warn":
+                self._sim_log(
+                    CODE_HANDS_OFF,
+                    f"请双手握住方向盘（已脱手 {self.dms.elapsed_s:.0f} s）",
+                    level=HMI_WARNING,
+                )
+            elif dms_ev == "tor":
+                self._sim_log(
+                    CODE_HANDS_OFF,
+                    "长时间脱手，系统请求接管",
+                    level=HMI_ALERT,
+                )
+                self.request_tor()
 
         preview = self.controller.get_preview_trajectory(true_state, path)
         lookahead = preview.get("lookahead")
@@ -1048,6 +1411,28 @@ class SimSession:
             if self.lane_change.ego_lane_id in self.lane_map.lanes
             else None,
             "lane_change": self.lane_change.status_payload(),
+            "prefer_maneuver": getattr(self.lane_change, "prefer_maneuver", None)
+            or "straight",
+            "planned_maneuver": getattr(self, "_planned_maneuver", None),
+            "use_truth_leads": bool(getattr(self, "_use_truth_leads", True)),
+            "use_est_pose_lateral": bool(getattr(self, "_use_est_pose_lateral", False)),
+            "nudge": self.nudge.status_payload()
+            if getattr(self, "nudge", None) is not None
+            else None,
+            "dms": self.dms.status_payload()
+            if getattr(self, "dms", None) is not None
+            else None,
+            "junctions": [
+                {
+                    "junction_id": j.junction_id,
+                    "name": j.name,
+                    "stop_lines": [
+                        [[float(p[0]), float(p[1])] for p in line]
+                        for line in j.stop_lines
+                    ],
+                }
+                for j in self.lane_map.junctions.values()
+            ],
             "aeb": {
                 "mode": self.aeb.last.mode,
                 "d_gap": self.aeb.last.d_gap,
@@ -1092,7 +1477,11 @@ class SimSession:
                 "cam_yaw": float(cam_yaw),
                 "lock_road_heading": True,
             },
-            "hmi": self.hmi.to_payload(self.state_machine.get_state()),
+            "tor_pending": bool(getattr(self, "_tor_pending", False)),
+            "hmi": self.hmi.to_payload(
+                self.state_machine.get_state(),
+                now=float(self.sim_time),
+            ),
         }
 
     def log_line(self, snapshot: Dict[str, Any]) -> str:

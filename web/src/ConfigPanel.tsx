@@ -19,6 +19,7 @@ interface Props {
   onSelectObstacle: (idx: number | null) => void;
   keepObstaclesOnNav: boolean;
   onKeepObstaclesOnNav: (v: boolean) => void;
+  dirty?: boolean;
 }
 
 function pointsToText(points: [number, number][]): string {
@@ -58,6 +59,7 @@ export function ConfigPanel({
   onSelectObstacle,
   keepObstaclesOnNav,
   onKeepObstaclesOnNav,
+  dirty = false,
 }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [showCoords, setShowCoords] = useState(false);
@@ -85,6 +87,91 @@ export function ConfigPanel({
       return next;
     });
     onChange({ ...draft, obstacles });
+  };
+
+  const setObstacleMotionKind = (
+    idx: number,
+    kind: "static" | "linear" | "scripted"
+  ) => {
+    const o = draft.obstacles[idx];
+    if (!o) return;
+    if (kind === "static") {
+      updateObstacle(idx, { dynamic: false, motion: null });
+      return;
+    }
+    if (kind === "linear") {
+      updateObstacle(idx, {
+        dynamic: true,
+        motion: {
+          type: "linear",
+          vx: o.motion?.type === "linear" ? o.motion.vx : 0,
+          vy: o.motion?.type === "linear" ? o.motion.vy : 1.5,
+          x0: o.x,
+          y0: o.y,
+        },
+      });
+      return;
+    }
+    const existing =
+      o.motion?.type === "scripted" ? o.motion.keyframes : null;
+    const kfs =
+      existing && existing.length >= 2
+        ? existing
+        : [
+            { t: 0, x: o.x, y: o.y },
+            { t: 8, x: o.x + 20, y: o.y },
+          ];
+    updateObstacle(idx, {
+      dynamic: true,
+      motion: { type: "scripted", keyframes: kfs },
+      x: kfs[0].x,
+      y: kfs[0].y,
+    });
+  };
+
+  const updateKeyframe = (
+    obsIdx: number,
+    kfIdx: number,
+    patch: Partial<{ t: number; x: number; y: number }>
+  ) => {
+    const o = draft.obstacles[obsIdx];
+    if (!o?.motion || o.motion.type !== "scripted") return;
+    const keyframes = o.motion.keyframes.map((k, i) =>
+      i === kfIdx ? { ...k, ...patch } : k
+    );
+    const sorted = [...keyframes].sort((a, b) => a.t - b.t);
+    updateObstacle(obsIdx, {
+      motion: { type: "scripted", keyframes: sorted },
+      x: sorted[0]?.x ?? o.x,
+      y: sorted[0]?.y ?? o.y,
+    });
+  };
+
+  const addKeyframe = (obsIdx: number) => {
+    const o = draft.obstacles[obsIdx];
+    if (!o?.motion || o.motion.type !== "scripted") return;
+    const last = o.motion.keyframes[o.motion.keyframes.length - 1];
+    const keyframes = [
+      ...o.motion.keyframes,
+      {
+        t: (last?.t ?? 0) + 2,
+        x: (last?.x ?? o.x) + 10,
+        y: last?.y ?? o.y,
+      },
+    ];
+    updateObstacle(obsIdx, { motion: { type: "scripted", keyframes } });
+  };
+
+  const removeKeyframe = (obsIdx: number, kfIdx: number) => {
+    const o = draft.obstacles[obsIdx];
+    if (!o?.motion || o.motion.type !== "scripted") return;
+    if (o.motion.keyframes.length <= 2) return;
+    const keyframes = o.motion.keyframes.filter((_, i) => i !== kfIdx);
+    updateObstacle(obsIdx, {
+      motion: { type: "scripted", keyframes },
+      x: keyframes[0].x,
+      y: keyframes[0].y,
+    });
   };
 
   const addLink = () => {
@@ -152,6 +239,11 @@ export function ConfigPanel({
         obstacles: data.obstacles || [],
         duration_s: data.duration_s || 20,
         base_map_id: data.base_map_id ?? null,
+        lane_map_id: data.lane_map_id ?? null,
+        start_lane_index: data.start_lane_index ?? 1,
+        planned_maneuver: data.planned_maneuver ?? null,
+        use_truth_leads: data.use_truth_leads !== false,
+        use_est_pose_lateral: !!data.use_est_pose_lateral,
       });
     } catch (e) {
       setImportError(String((e as Error).message || e));
@@ -161,7 +253,14 @@ export function ConfigPanel({
   return (
     <aside className="panel">
       <header className="panel-head">
-        <h2>场景配置</h2>
+        <h2>
+          场景配置
+          {dirty ? (
+            <span className="draft-badge" title="草稿与当前仿真场景不一致，请点「应用并重开」">
+              草稿未应用
+            </span>
+          ) : null}
+        </h2>
         <button type="button" className="btn primary" onClick={onApply} disabled={busy}>
           应用并重开
         </button>
@@ -280,6 +379,78 @@ export function ConfigPanel({
           />
         </label>
       </div>
+
+      <section className="block">
+        <div className="block-head">
+          <h3>教学闭环</h3>
+        </div>
+        <label className="check keep-obs">
+          <input
+            type="checkbox"
+            checked={draft.use_truth_leads !== false}
+            onChange={(e) =>
+              onChange({ ...draft, use_truth_leads: e.target.checked })
+            }
+          />
+          Leads 使用真值（ACC/AEB/变道间隙；关闭=感知融合+预测）
+        </label>
+        <label className="check keep-obs">
+          <input
+            type="checkbox"
+            checked={!!draft.use_est_pose_lateral}
+            onChange={(e) =>
+              onChange({ ...draft, use_est_pose_lateral: e.target.checked })
+            }
+          />
+          横向控制使用估计位姿（开启易画龙）
+        </label>
+        <label className="check keep-obs">
+          <input
+            type="checkbox"
+            checked={draft.nudge_enabled !== false}
+            onChange={(e) =>
+              onChange({ ...draft, nudge_enabled: e.target.checked })
+            }
+          />
+          启用同车道绕障 nudge
+        </label>
+        <div className="meta-row">
+          <label className="field compact">
+            <span>脱手告警 (s)</span>
+            <input
+              type="number"
+              min={0.5}
+              step={0.5}
+              value={draft.hands_off_warn_s ?? 6}
+              onChange={(e) =>
+                onChange({
+                  ...draft,
+                  hands_off_warn_s: Number(e.target.value) || 6,
+                })
+              }
+            />
+          </label>
+          <label className="field compact">
+            <span>脱手 TOR (s)</span>
+            <input
+              type="number"
+              min={1}
+              step={0.5}
+              value={draft.hands_off_tor_s ?? 12}
+              onChange={(e) =>
+                onChange({
+                  ...draft,
+                  hands_off_tor_s: Number(e.target.value) || 12,
+                })
+              }
+            />
+          </label>
+        </div>
+        <p className="hint">
+          写入场景后需「应用并重开」；运行中也可点顶栏 Leads/横向开关即时切换。ACTIVE
+          后请定期点「双手在环」(H) 以免脱手 TOR。脱手阈值须告警 &lt; TOR。
+        </p>
+      </section>
 
       <section className="block">
         <div className="block-head">
@@ -434,7 +605,10 @@ export function ConfigPanel({
                   <input
                     type="checkbox"
                     checked={o.dynamic}
-                    onChange={(e) => updateObstacle(idx, { dynamic: e.target.checked })}
+                    onChange={(e) => {
+                      if (e.target.checked) setObstacleMotionKind(idx, "linear");
+                      else setObstacleMotionKind(idx, "static");
+                    }}
                   />
                   动态
                 </label>
@@ -449,6 +623,23 @@ export function ConfigPanel({
                   ×
                 </button>
               </div>
+              {o.dynamic && (
+                <div className="card-row sub" onClick={(e) => e.stopPropagation()}>
+                  <span className="muted">运动</span>
+                  <select
+                    value={o.motion?.type === "scripted" ? "scripted" : "linear"}
+                    onChange={(e) =>
+                      setObstacleMotionKind(
+                        idx,
+                        e.target.value === "scripted" ? "scripted" : "linear"
+                      )
+                    }
+                  >
+                    <option value="linear">匀速</option>
+                    <option value="scripted">脚本</option>
+                  </select>
+                </div>
+              )}
               {o.dynamic && o.motion && o.motion.type === "linear" && (
                 <div className="card-row sub" onClick={(e) => e.stopPropagation()}>
                   <span className="muted">vx</span>
@@ -482,7 +673,66 @@ export function ConfigPanel({
                 </div>
               )}
               {o.dynamic && o.motion && o.motion.type === "scripted" && (
-                <p className="hint">脚本运动 · {o.motion.keyframes.length} 关键帧（预设剧本）</p>
+                <div className="kf-editor" onClick={(e) => e.stopPropagation()}>
+                  <div className="card-row sub">
+                    <span className="muted">
+                      脚本 · {o.motion.keyframes.length} 关键帧
+                    </span>
+                    <button
+                      type="button"
+                      className="btn small"
+                      onClick={() => addKeyframe(idx)}
+                    >
+                      +帧
+                    </button>
+                  </div>
+                  <div className="kf-table">
+                    {o.motion.keyframes.map((kf, ki) => (
+                      <div className="kf-row" key={ki}>
+                        <input
+                          className="num"
+                          type="number"
+                          step={0.1}
+                          title="t"
+                          value={kf.t}
+                          onChange={(e) =>
+                            updateKeyframe(idx, ki, { t: Number(e.target.value) })
+                          }
+                        />
+                        <input
+                          className="num"
+                          type="number"
+                          step={0.1}
+                          title="x"
+                          value={kf.x}
+                          onChange={(e) =>
+                            updateKeyframe(idx, ki, { x: Number(e.target.value) })
+                          }
+                        />
+                        <input
+                          className="num"
+                          type="number"
+                          step={0.1}
+                          title="y"
+                          value={kf.y}
+                          onChange={(e) =>
+                            updateKeyframe(idx, ki, { y: Number(e.target.value) })
+                          }
+                        />
+                        <button
+                          type="button"
+                          className="btn small danger"
+                          disabled={o.motion!.type === "scripted" && o.motion!.keyframes.length <= 2}
+                          onClick={() => removeKeyframe(idx, ki)}
+                          title="删除关键帧（至少保留 2）"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="hint">列：t / x / y；画布显示折线路径</p>
+                </div>
               )}
             </div>
           );

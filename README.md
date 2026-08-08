@@ -52,7 +52,7 @@ PythonProject/
 - **framework** — 五态状态机（OFF → PASSIVE → STANDBY → ACTIVE → OVERRIDE）+ 事件总线  
 - **simulator** — 运动学自行车模型（后轴中心）、三车道、静态/脚本动态障碍  
 - **perception** — 激光雷达与摄像头模拟及空间匹配融合  
-- **hmi** — 订阅 `hmi_alert`；标准文言（激活 / 退出 / 限速）；写入 `snapshot.hmi`  
+- **hmi** — 订阅 `hmi_alert`；事件日志 + 优先级 toast（自动消失）；TOR / 接管文言  
 - **control** — Pure Pursuit + 纵向 P 控制；预瞄轨迹可供 Web 绘制  
 - **planning** — 路径密化 + 时距 ACC（保险杠净空、垂距本车道）+ 终点减速  
 - **visualize** — matplotlib 鸟瞰（车头向上、三车道）  
@@ -60,18 +60,19 @@ PythonProject/
 - **prediction** — 融合检测跟踪 + 恒速短时预测  
 - **map** — Route/Link 限速；**LaneMap** 车道级拓扑；`highway_3lane` / `urban_arterial` / `campus_grid`  
 - **safety** — FCW / AEB（TTC + 净空，盖写纵向）  
-- **sim_server / web** — 实时鸟瞰、画布编辑、算路、时间轴、手动激活、拨杆变道、HMI  
+- **sim_server / web** — 实时鸟瞰、画布编辑、算路、时间轴、激活/退出、拨杆变道、TOR/接管、HMI  
 
 ## 规划中 / 下一步
 
-详见 [`HANDOFF.md`](HANDOFF.md)：OVERRIDE/TOR、告警自动消失、路口拼接、感知闭环 ACC 等（P2–P5）。
+详见 [`HANDOFF.md`](HANDOFF.md)：P1–P6 已收口后的可选增强。
 
-### 已具备的教学 L2 能力（2026-08-05）
+### 已具备的教学 L2+ 能力（至 2026-08-08 / P6 + P-UI1）
 
-- **车道级底图** `highway_3lane` / `urban_arterial`（Lane 邻接、虚实线、successor）
-- **LCC** 跟当前车道中心线 + **拨杆变道**
-- **FCW / AEB** 独立纵向安全通道
-- **ACC** 时距跟车 / cut-in（预设 `acc_highway`）
+- **车道级底图** / **LCC** / **拨杆变道** / **路口 auto-maneuver**
+- **FCW·AEB** / **ACC** / **TOR·OVERRIDE**
+- **脚本关键帧** / **草稿角标** / **Leads 真值·感知开关（ACC+AEB+变道间隙）**
+- **同车道绕障 nudge（与拨杆仲裁）** / **可配置 DMS 脱手计时**
+- **仿真台 UI**：Author/Drive/Review · Mission Dock · SafetyBanner · **仪表簇** · **通道条**
 
 ## 文档
 
@@ -98,7 +99,7 @@ PythonProject/
 - Python 3.10+（已在 3.14 下验证）
 - 核心仿真无强制数值库；CLI 鸟瞰需要 `matplotlib`；Web 需要 `fastapi` / `uvicorn` 与 Node.js（构建 `web/`）
 - 关闭 CLI 窗口渲染：`visualize/config.py` 中 `ENABLE_VISUALIZE = False`
-- Web：`python run_web.py`；前端有改动加 `--rebuild`；**改 Python 后必须重启进程**
+- Web：`python3 run_web.py`；前端有改动加 `--rebuild`；**改 Python 后必须重启进程**
 
 ## 快速开始
 
@@ -108,11 +109,11 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 # CLI 仿真（matplotlib）
-python main.py
+python3 main.py
 
 # Web 仿真（推荐）
-python run_web.py
-# 前端有改动: python run_web.py --rebuild
+python3 run_web.py
+# 前端有改动: python3 run_web.py --rebuild
 # 端口占用: lsof -ti:8000 | xargs kill -9
 
 pytest
@@ -120,7 +121,7 @@ pytest
 
 ## Web 演示流程（推荐）
 
-1. `python run_web.py --rebuild`，浏览器打开提示的地址  
+1. `python3 run_web.py --rebuild`，浏览器打开提示的地址  
 2. 预设选「高速：LCC + 拨杆变道」或「高速：FCW / AEB」（也可算路/编路线）  
 3. 点「开始」→ 约 t≥2.5s 进入 **待机(STANDBY)**  
 4. 车速接近可激活区间后点「**激活**」→ HMI 提示「功能已激活」  

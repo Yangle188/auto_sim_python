@@ -32,6 +32,16 @@ def test_urban_has_junction_and_stop_lines():
     j = lm.junctions["UR_J0"]
     assert len(j.stop_lines) >= 2
     assert get_lane_map("urban_arterial") is not None
+    assert "UR_TURN_EL_N" in lm.lanes
+    assert "UR_NB_OUT_L1" in lm.lanes
+    approach = lm.get("UR_EW0_L1")
+    assert len(approach.successors) == 2
+    assert approach.successors[0] == "UR_EW1_L1"
+    assert approach.successors[1] == "UR_TURN_EL_N"
+    straight = lm.follow_lane_chain("UR_EW0_L1", prefer_maneuver="straight")
+    assert straight == ["UR_EW0_L1", "UR_EW1_L1", "UR_EW2_L1"]
+    left = lm.follow_lane_chain("UR_EW0_L1", prefer_maneuver="left")
+    assert left == ["UR_EW0_L1", "UR_TURN_EL_N", "UR_NB_OUT_L1"]
 
 
 def test_adapter_from_centerline():

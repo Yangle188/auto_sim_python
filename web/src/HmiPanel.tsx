@@ -49,6 +49,18 @@ function codeLabel(code: string): string {
       return "LCC";
     case "state_change":
       return "状态";
+    case "tor":
+      return "TOR";
+    case "override":
+      return "接管";
+    case "auto_maneuver":
+      return "机动";
+    case "nudge":
+      return "绕障";
+    case "hands_off":
+      return "脱手";
+    case "teach":
+      return "教学";
     default:
       return "事件";
   }

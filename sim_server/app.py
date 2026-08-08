@@ -43,9 +43,17 @@ class ControlBody(BaseModel):
         "activate",
         "deactivate",
         "lane_change",
+        "tor",
+        "override",
+        "set_teaching",
+        "hands_on",
     ]
     frame_i: int | None = None
     direction: Literal["left", "right"] | None = None
+    use_truth_leads: bool | None = None
+    use_est_pose_lateral: bool | None = None
+    hands_off_warn_s: float | None = None
+    hands_off_tor_s: float | None = None
 
 
 class RoutePlanBody(BaseModel):
@@ -269,6 +277,23 @@ async def control(body: ControlBody) -> Dict[str, Any]:
             if body.direction is None:
                 raise HTTPException(status_code=400, detail="lane_change 需要 direction=left|right")
             _session.request_lane_change(body.direction)
+            snap = _session.current_snapshot()
+        elif body.action == "tor":
+            _session.request_tor()
+            snap = _session.current_snapshot()
+        elif body.action == "override":
+            _session.request_override()
+            snap = _session.current_snapshot()
+        elif body.action == "set_teaching":
+            _session.set_teaching_flags(
+                use_truth_leads=body.use_truth_leads,
+                use_est_pose_lateral=body.use_est_pose_lateral,
+                hands_off_warn_s=body.hands_off_warn_s,
+                hands_off_tor_s=body.hands_off_tor_s,
+            )
+            snap = _session.current_snapshot()
+        elif body.action == "hands_on":
+            _session.request_hands_on()
             snap = _session.current_snapshot()
         _ensure_loop()
         status = _session.status_payload()

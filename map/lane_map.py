@@ -136,16 +136,55 @@ class LaneMap:
             if lane.index == index and lane.lane_type == "driving"
         ]
 
-    def follow_lane_chain(self, start_lane_id: str) -> List[str]:
-        """沿 successors[0] 向前展开一条车道链（教学高速走廊）。"""
+    def pick_successor(
+        self,
+        lane_id: str,
+        *,
+        prefer_maneuver: Optional[str] = None,
+        prefer_successor: Optional[str] = None,
+    ) -> str:
+        """
+        在多 successor 中选下一条车道。
+
+        约定：successors[0]=直行，[1]=左转，[2]=右转（若存在）。
+        """
+        lane = self.lanes.get(lane_id)
+        if lane is None:
+            return ""
+        succs = list(lane.successors)
+        if not succs:
+            return ""
+        if prefer_successor and prefer_successor in succs:
+            return prefer_successor
+        m = (prefer_maneuver or "straight").lower()
+        if m == "left" and len(succs) > 1:
+            return succs[1]
+        if m == "right":
+            if len(succs) > 2:
+                return succs[2]
+            if len(succs) > 1:
+                return succs[-1]
+        return succs[0]
+
+    def follow_lane_chain(
+        self,
+        start_lane_id: str,
+        *,
+        prefer_maneuver: Optional[str] = None,
+        prefer_successor: Optional[str] = None,
+    ) -> List[str]:
+        """沿 successor 向前展开车道链；多出口时按 maneuver 约定选取。"""
         out: List[str] = []
         seen = set()
         cur = start_lane_id
         while cur and cur not in seen and cur in self.lanes:
             seen.add(cur)
             out.append(cur)
-            succs = self.lanes[cur].successors
-            cur = succs[0] if succs else ""
+            cur = self.pick_successor(
+                cur,
+                prefer_maneuver=prefer_maneuver,
+                prefer_successor=prefer_successor,
+            )
         return out
 
     def chain_centerline(self, lane_ids: Sequence[str]) -> List[Point]:

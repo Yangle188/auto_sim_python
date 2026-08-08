@@ -99,6 +99,17 @@ class SceneConfig(BaseModel):
     lane_map_id: Optional[str] = None
     # 起步车道 index（自左向右，三车道默认中间=1）
     start_lane_index: int = 1
+    # 接近路口时 auto-maneuver 目标：left|right|None（直行不触发切换）
+    planned_maneuver: Optional[str] = None
+    # True：ACC/AEB/变道间隙用世界真值 leads；False：仅靠感知融合+预测（教学闭环）
+    use_truth_leads: bool = True
+    # True：横向 Pure Pursuit 用 EKF 估计位姿（易画龙）；False：用真值（默认稳定）
+    use_est_pose_lateral: bool = False
+    # True：允许同车道简单绕障 nudge
+    nudge_enabled: bool = True
+    # DMS 脱手：告警 / 自动 TOR 阈值（秒）；须 0 < warn < tor
+    hands_off_warn_s: float = 6.0
+    hands_off_tor_s: float = 12.0
 
     @field_validator("duration_s")
     @classmethod
@@ -113,6 +124,18 @@ class SceneConfig(BaseModel):
         if not v:
             raise ValueError("场景至少需要 1 条路段")
         return v
+
+    @model_validator(mode="after")
+    def _hands_off_thresholds(self) -> "SceneConfig":
+        warn = float(self.hands_off_warn_s)
+        tor = float(self.hands_off_tor_s)
+        if warn <= 0.0:
+            raise ValueError("hands_off_warn_s 必须 > 0")
+        if tor <= warn:
+            raise ValueError("hands_off_tor_s 必须 > hands_off_warn_s")
+        self.hands_off_warn_s = warn
+        self.hands_off_tor_s = tor
+        return self
 
     def to_route(self) -> Route:
         links = tuple(
@@ -175,12 +198,24 @@ def evaluate_motion(motion: Motion, t: float) -> Tuple[float, float]:
     return float(kfs[-1].x), float(kfs[-1].y)
 
 
-def _route_from_lane_chain(lane_map: LaneMap, start_lane_id: str, route_id: str) -> Route:
+def _route_from_lane_chain(
+    lane_map: LaneMap,
+    start_lane_id: str,
+    route_id: str,
+    *,
+    prefer_maneuver: str = "straight",
+) -> Route:
     """由车道链生成导航 Route（限速按各 lane 段拆 Link）。"""
-    chain = lane_map.follow_lane_chain(start_lane_id)
+    chain = lane_map.follow_lane_chain(
+        start_lane_id, prefer_maneuver=prefer_maneuver
+    )
     links: List[Link] = []
     for lid in chain:
         lane = lane_map.get(lid)
+        if "TURN" in lid or (lane.section_id or "").startswith("UR_TURN"):
+            man = prefer_maneuver if prefer_maneuver in ("left", "right") else "left"
+        else:
+            man = "straight"
         links.append(
             Link(
                 lid,
@@ -188,7 +223,7 @@ def _route_from_lane_chain(lane_map: LaneMap, start_lane_id: str, route_id: str)
                 lane.speed_limit,
                 name=lane.name or lid,
                 road_class="main",
-                maneuver="straight",
+                maneuver=man,
             )
         )
     if not links:
@@ -221,6 +256,7 @@ def highway_lcc_scene_config() -> SceneConfig:
         base_map_id="highway_3lane",
         lane_map_id="highway_3lane",
         start_lane_index=2,
+        nudge_enabled=False,  # 本场景教拨杆变道，不自动 nudge
     )
 
 
@@ -245,6 +281,32 @@ def highway_aeb_scene_config() -> SceneConfig:
         base_map_id="highway_3lane",
         lane_map_id="highway_3lane",
         start_lane_index=1,
+        nudge_enabled=False,  # 本场景专测 AEB，不绕开
+    )
+
+
+def nudge_scene_config() -> SceneConfig:
+    """高速中道绕障：前方静止障碍，ACTIVE 后同车道横向 nudge 绕行。"""
+    lm = get_lane_map("highway_3lane")
+    assert lm is not None
+    start_lane = lm.lane_ids_by_index(1)[0]
+    route = _route_from_lane_chain(lm, start_lane, "nudge_demo")
+    return SceneConfig(
+        route_id=route.route_id,
+        links=_route_to_links(route),
+        obstacles=[
+            ObstacleIn(
+                x=55.0,
+                y=0.0,
+                width=VEHICLE_WIDTH * 0.9,
+                height=VEHICLE_LENGTH * 0.7,
+            ),
+        ],
+        duration_s=35.0,
+        base_map_id="highway_3lane",
+        lane_map_id="highway_3lane",
+        start_lane_index=1,
+        nudge_enabled=True,
     )
 
 
@@ -317,6 +379,27 @@ def urban_scene_config() -> SceneConfig:
     )
 
 
+def urban_left_scene_config() -> SceneConfig:
+    """城市路口左转：接近路口后 auto-maneuver 切到左转连接道 → 北向出口。"""
+    lm = get_lane_map("urban_arterial")
+    assert lm is not None
+    start_lane = lm.lane_ids_by_index(1)[0]
+    # 导航金黄线展示左转链；LCC 初始仍直行，临近路口再切换
+    route = _route_from_lane_chain(
+        lm, start_lane, "urban_left", prefer_maneuver="left"
+    )
+    return SceneConfig(
+        route_id=route.route_id,
+        links=_route_to_links(route),
+        obstacles=[],
+        duration_s=40.0,
+        base_map_id="urban_arterial",
+        lane_map_id="urban_arterial",
+        start_lane_index=1,
+        planned_maneuver="left",
+    )
+
+
 def urban_turns_scene_config() -> SceneConfig:
     """旧城市左右转路线（兼容）。"""
     route = build_urban_turn_route()
@@ -373,8 +456,10 @@ def list_presets() -> Dict[str, dict]:
     """预设场景目录（供前端下拉）。"""
     highway_lcc = highway_lcc_scene_config()
     highway_aeb = highway_aeb_scene_config()
+    nudge = nudge_scene_config()
     acc = acc_scene_config()
     urban = urban_scene_config()
+    urban_left = urban_left_scene_config()
     urban_turns = urban_turns_scene_config()
     simple = simple_scene_config()
     return {
@@ -390,6 +475,12 @@ def list_presets() -> Dict[str, dict]:
             "description": "中道接近静止前车，先 FCW 再 AEB 紧急制动",
             "scene": highway_aeb.model_dump(),
         },
+        "nudge_demo": {
+            "id": "nudge_demo",
+            "title": "高速：同车道绕障 nudge",
+            "description": "中道前方静止障碍；激活后路径横向弓形绕行（非完整变道）",
+            "scene": nudge.model_dump(),
+        },
         "acc_highway": {
             "id": "acc_highway",
             "title": "三车道：跟车 / Cut-in / Cut-out",
@@ -401,6 +492,12 @@ def list_presets() -> Dict[str, dict]:
             "title": "城市：主干+路口",
             "description": "东向主干 LCC，静止障碍 + 路口横穿动态车",
             "scene": urban.model_dump(),
+        },
+        "urban_left": {
+            "id": "urban_left",
+            "title": "城市：路口左转",
+            "description": "东向接近路口后自动切左转连接道，驶入北向出口",
+            "scene": urban_left.model_dump(),
         },
         "urban_turns": {
             "id": "urban_turns",

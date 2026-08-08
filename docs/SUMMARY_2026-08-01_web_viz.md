@@ -33,8 +33,8 @@ cd PythonProject
 # 首次：source .venv/bin/activate && pip install -r requirements.txt
 
 # 推荐（无需先 activate；脚本会切到 .venv）
-python run_web.py              # 或 ./run_web.sh
-python run_web.py --rebuild    # 前端有改动时
+python3 run_web.py              # 或 ./run_web.sh
+python3 run_web.py --rebuild    # 前端有改动时
 
 # 开发双端
 .venv/bin/python -m sim_server # :8000

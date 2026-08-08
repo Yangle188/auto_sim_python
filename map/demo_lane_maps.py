@@ -91,18 +91,15 @@ def build_highway_3lane_basemap() -> BaseMap:
 
 def build_urban_arterial_map() -> LaneMap:
     """
-    城市主干：东西向双车道（教学挤成 3 显式：左辅感 + 主 + 右）简化为两车道主路；
-    为与 LCC 一致用 3 车道（左虚线可换、右缘实线），并含南北向路口连接车道。
+    城市主干：东西向三车道 + 十字路口停车线 + 东向→北向左转连接道。
 
     布局（世界坐标，单位 m）:
       东西主路 y=0，x∈[-40, 160]
       南北支路 x=60，y∈[-60, 60]
       路口中心 (60, 0)，停车线在进口道
+      中道 UR_EW0_L1 successors = (直行 UR_EW1_L1, 左转 UR_TURN_EL_N)
     """
     lw = LANE_WIDTH
-    # 西→东 主路三段（过路口前 / 路口内简化直行 / 过路口后）
-    # 城市用 2 条驾驶道：index 0 左、1 右；再加中间视觉？计划要求车道级——用 2 车道更清晰。
-    # stitch 要求奇数；用 num_lanes=3 但城市「右道」为主行车道起步。
     west = _sample_line(-40.0, 0.0, 50.0, 0.0, 10.0)
     through = _sample_line(50.0, 0.0, 70.0, 0.0, 5.0)
     east = _sample_line(70.0, 0.0, 160.0, 0.0, 10.0)
@@ -140,9 +137,18 @@ def build_urban_arterial_map() -> LaneMap:
         lane_width=lw,
     )
 
-    # 南北向：单独两条车道（南→北 / 北→南 各取中心），接到路口简化为独立 lane
+    # 南北向进口（装饰/横穿教学）；北向出口接左转连接道
     nb_center = _sample_line(60.0, -60.0, 60.0, -8.0, 10.0)
     sb_center = _sample_line(60.0, 60.0, 60.0, 8.0, 10.0)
+    nb_out = _sample_line(60.0, 10.0, 60.0, 60.0, 10.0)
+    # 东向中道 → 北向：路口四分之一圆弧（圆心 60,0，半径 10）
+    turn_pts: List[Tuple[float, float]] = []
+    r_turn = 10.0
+    cx, cy = 60.0, 0.0
+    for i in range(9):
+        th = math.pi - (math.pi / 2.0) * (i / 8.0)  # π(西) → π/2(北)
+        turn_pts.append((cx + r_turn * math.cos(th), cy + r_turn * math.sin(th)))
+
     nb = Lane(
         lane_id="UR_NB_L1",
         points=tuple(nb_center),
@@ -163,9 +169,54 @@ def build_urban_arterial_map() -> LaneMap:
         section_id="UR_SB",
         name="南向进口",
     )
+    turn = Lane(
+        lane_id="UR_TURN_EL_N",
+        points=tuple(turn_pts),
+        speed_limit=6.0,
+        index=1,
+        left_marking="virtual",
+        right_marking="virtual",
+        predecessors=("UR_EW0_L1",),
+        successors=("UR_NB_OUT_L1",),
+        section_id="UR_TURN",
+        name="东向左转连接",
+    )
+    nb_exit = Lane(
+        lane_id="UR_NB_OUT_L1",
+        points=tuple(nb_out),
+        speed_limit=8.0,
+        index=1,
+        left_marking="solid",
+        right_marking="solid",
+        predecessors=("UR_TURN_EL_N",),
+        section_id="UR_NB_OUT",
+        name="北向出口",
+    )
+
     lanes = dict(lm.lanes)
     lanes[nb.lane_id] = nb
     lanes[sb.lane_id] = sb
+    lanes[turn.lane_id] = turn
+    lanes[nb_exit.lane_id] = nb_exit
+
+    # 中道：successors = (直行, 左转)；其余进口仍仅直行
+    approach = lanes["UR_EW0_L1"]
+    through_id = approach.successors[0] if approach.successors else "UR_EW1_L1"
+    lanes["UR_EW0_L1"] = Lane(
+        lane_id=approach.lane_id,
+        points=approach.points,
+        speed_limit=approach.speed_limit,
+        index=approach.index,
+        lane_type=approach.lane_type,
+        left_marking=approach.left_marking,
+        right_marking=approach.right_marking,
+        left_lane_id=approach.left_lane_id,
+        right_lane_id=approach.right_lane_id,
+        successors=(through_id, "UR_TURN_EL_N"),
+        predecessors=approach.predecessors,
+        section_id=approach.section_id,
+        name=approach.name,
+    )
 
     stop_w = 1.5 * lw
     junc = Junction(
@@ -178,7 +229,7 @@ def build_urban_arterial_map() -> LaneMap:
             ((60.0 - stop_w, 8.0), (60.0 + stop_w, 8.0)),
         ),
         incoming=("UR_EW0_L1", "UR_NB_L1", "UR_SB_L1"),
-        outgoing=("UR_EW2_L1",),
+        outgoing=("UR_EW2_L1", "UR_NB_OUT_L1"),
     )
     return LaneMap(
         map_id="urban_arterial",

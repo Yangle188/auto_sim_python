@@ -1,4 +1,6 @@
 # tests/test_aeb.py
+from types import SimpleNamespace
+
 from safety.aeb import AEBController, MODE_AEB, MODE_FCW, MODE_NONE
 from sim_server.scene_schema import highway_aeb_scene_config
 from sim_server.session import SimSession
@@ -24,6 +26,19 @@ def test_aeb_fcw_then_brake():
     )
     assert r2.mode == MODE_AEB
     assert r2.acc is not None and r2.acc <= MAX_DECEL + 1e-6
+
+
+def test_aeb_accepts_prediction_style_leads():
+    """感知预测对象（带 vx/vy）可作为 AEB leads。"""
+    aeb = AEBController()
+    path = [(0.0, 0.0), (200.0, 0.0)]
+    pred = SimpleNamespace(x=12.0, y=0.0, vx=0.0, vy=0.0, height=4.0)
+    r = aeb.evaluate(
+        {"x": 0.0, "y": 0.0, "speed": 12.0},
+        path,
+        leads=[pred],
+    )
+    assert r.mode == MODE_AEB
 
 
 def test_session_aeb_no_collision():
@@ -59,3 +74,25 @@ def test_session_aeb_no_collision():
 
     assert saw_aeb or saw_fcw, "应触发 FCW 或 AEB"
     assert min_gap > 0.0, f"发生碰撞/重叠 min_gap={min_gap}"
+
+
+def test_session_aeb_with_perception_leads():
+    """关闭真值 leads 后，AEB 走感知路径仍应能触发 FCW/AEB。"""
+    scene = highway_aeb_scene_config()
+    scene = scene.model_copy(update={"use_truth_leads": False})
+    sess = SimSession(scene)
+    sess.start()
+    assert sess._use_truth_leads is False
+    saw = False
+    for _ in range(int(22.0 / DT)):
+        snap = sess.step_once()
+        if snap is None:
+            break
+        st = sess.state_machine.get_state()
+        if st == "STANDBY":
+            sess.request_activate()
+        mode = sess.aeb.last.mode
+        if mode in (MODE_FCW, MODE_AEB):
+            saw = True
+            break
+    assert saw, "感知 leads 模式下应触发 FCW 或 AEB"

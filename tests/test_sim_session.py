@@ -105,8 +105,10 @@ def test_api_scene_and_control():
     presets = r.json()
     assert "highway_lcc" in presets["scenes"]
     assert "highway_aeb" in presets["scenes"]
+    assert "nudge_demo" in presets["scenes"]
     assert "acc_highway" in presets["scenes"]
     assert "urban_arterial" in presets["scenes"]
+    assert "urban_left" in presets["scenes"]
     assert "urban_turns" in presets["scenes"]
     assert "simple" in presets["scenes"]
 

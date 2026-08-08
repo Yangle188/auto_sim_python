@@ -17,7 +17,7 @@
 - React（Vite）Canvas 鸟瞰 + 配置面板；中文 UI；预设：
   - `urban_turns`：主路 → 右转辅路 → 辅路 → 左转汇入 → 主路
   - `simple`：近直线三段
-- 一键：`python run_web.py` / `./run_web.sh`（自动切到项目 `.venv`，避免系统 Python 缺 `uvicorn`）。
+- 一键：`python3 run_web.py` / `./run_web.sh`（自动切到项目 `.venv`，避免系统 Python 缺 `uvicorn`）。
 - 文档：`SUMMARY_2026-08-01_web_viz.md`。
 
 ### 3. Simulator / World 几何

@@ -8,7 +8,7 @@
 | 项目 | 说明 |
 |------|------|
 | 工程路径 | `PythonProject/` |
-| 推荐启动 | `python run_web.py --rebuild` |
+| 推荐启动 | `python3 run_web.py --rebuild` |
 | 代码基准日期 | 2026-08-05 |
 
 ---
@@ -723,14 +723,18 @@ HMI 向驾驶员呈现功能状态与事件提示。本工程重点事件：
 | 进入 `ACTIVE` | 功能已激活 | `ad_activate` |
 | 返回 `STANDBY` | 功能已退出 | `ad_exit` |
 | 前方限速变化 | 限速切换：… | `speed_limit` |
+| 接管请求 TOR | 请立即接管车辆 | `tor` |
+| 进入 `OVERRIDE` | 驾驶员已接管… | `override` |
 
 其余状态转移使用 `state_change` 通用文案。
 
+**Toast 与日志**：`alerts` 为完整事件日志；`latest` 为当前顶栏提示——在等级时效窗口内按优先级选取（ALERT 压过 INFO），超时后可为空。
+
 ### 13.3 核心代码逻辑
 
-1. 会话在状态/限速变化时 `publish("hmi_alert", ...)`  
+1. 会话在状态/限速/安全事件时 `publish("hmi_alert", ...)`  
 2. `HMIManager` 将新告警插入列表头部，超过容量淘汰最旧项  
-3. 每帧 `to_payload(ad_state)` 写入 snapshot  
+3. 每帧 `to_payload(ad_state, now=sim_time)` 写入 snapshot（`latest` 含时效）  
 
 ### 13.4 相关数据接口及含义
 

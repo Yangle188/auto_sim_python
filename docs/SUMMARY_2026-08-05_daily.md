@@ -54,7 +54,7 @@
 cd /Users/ricka/PycharmProjects/PythonProject
 source .venv/bin/activate
 pytest
-python run_web.py --rebuild
+python3 run_web.py --rebuild
 ```
 
 1. **LCC + 变道**：预设「高速：LCC + 拨杆变道」→ 开始 → 待机后激活 → 左变道超越右道静止车；实线段拨杆应拒绝。  

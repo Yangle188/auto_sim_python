@@ -39,3 +39,17 @@ MIN_GAP = 6.0
 FOLLOW_KP = 0.4
 # 预测轨进入本车道时的提前量（按未来点判定 cut-in）
 CUTIN_LOOKAHEAD_USE_PRED = True
+
+# --- 简单绕障 nudge（同车道横向弓形偏移，非完整变道）---
+NUDGE_TRIGGER_MIN = 8.0  # 保险杠净空下限（过近交给 AEB/ACC）
+NUDGE_TRIGGER_MAX = 38.0
+NUDGE_LAT_FRAC = 0.55  # 相对车道宽的横向幅度
+NUDGE_APPROACH_S = 10.0
+NUDGE_HOLD_S = 8.0
+NUDGE_RETURN_S = 12.0
+NUDGE_STATIC_SPEED = 0.5  # |v| 低于此视为静止障碍
+NUDGE_DONE_PAST_S = 6.0  # 驶过障碍后结束 nudge
+
+# --- DMS / 脱手计时（ACTIVE 后累计，点「双手在环」清零）---
+HANDS_OFF_WARN_S = 6.0
+HANDS_OFF_TOR_S = 12.0
